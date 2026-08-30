@@ -38,6 +38,11 @@ STAFF_ROLES = {
     "curator_division": "🟣 Curator Division",
     "curator_pro": "🔴 Curator Pro",
 }
+LEAGUE_ROLES = {
+    "prospect": "🟢 Prospect",
+    "division": "🟣 Division",
+    "pro": "🔴 Pro",
+}
 
 intents = discord.Intents.default()
 intents.members = True
@@ -81,6 +86,16 @@ def can_administer(member):
     return can_manage_staff(member) or has_role(member, STAFF_ROLES["admin"])
 
 
+def curator_league(member):
+    for league in ("prospect","division","pro"):
+        if has_role(member,STAFF_ROLES[f"curator_{league}"]): return league
+    return None
+
+
+def can_use_role_panel(member):
+    return can_manage_staff(member) or curator_league(member) is not None
+
+
 async def staff_command_access(interaction):
     if not await command_channel_access(interaction):
         return False
@@ -88,7 +103,8 @@ async def staff_command_access(interaction):
         return True
     if not interaction.guild:
         return False
-    return interaction.user.id == interaction.guild.owner_id or any(has_role(interaction.user,name) for name in STAFF_ROLES.values())
+    allowed_roles=tuple(STAFF_ROLES.values())+tuple(LEAGUE_ROLES.values())
+    return interaction.user.id == interaction.guild.owner_id or any(has_role(interaction.user,name) for name in allowed_roles)
 
 
 async def command_channel_access(interaction):
@@ -124,6 +140,12 @@ async def ensure_staff_roles(guild):
             try: await role.edit(color=role_color,permissions=permissions,hoist=True,reason="SEOR: синхронизация служебной роли")
             except discord.Forbidden: pass
         result[key]=role
+    league_colors={"prospect":discord.Color.green(),"division":discord.Color.purple(),"pro":discord.Color.red()}
+    for key,name in LEAGUE_ROLES.items():
+        role=discord.utils.get(guild.roles,name=name)
+        if not role:
+            role=await guild.create_role(name=name,color=league_colors[key],permissions=discord.Permissions.none(),hoist=True,reason="SEOR: роль доступа к лиге")
+        result[f"league_{key}"]=role
     owner=guild.get_member(guild.owner_id)
     if owner and result["owner"] not in owner.roles:
         try: await owner.add_roles(result["owner"],reason="SEOR: роль владельца сервера")
@@ -459,9 +481,9 @@ class DashboardPanelView(discord.ui.View):
         await i.response.edit_message(embed=dashboard_home_embed(),view=DashboardView())
 
     async def role_panel(self,i):
-        if not can_manage_staff(i.user):
-            return await i.response.send_message("Управлять ролями может только владелец сервера или участник с ролью Owner.",ephemeral=True)
-        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и служебную роль, затем нажми **Выдать** или **Снять**.",color=color()),view=RolePanelView(),ephemeral=True)
+        if not can_use_role_panel(i.user):
+            return await i.response.send_message("Управлять ролями могут Owner и кураторы лиг.",ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Куратор может управлять только ролью своей лиги.",color=color()),view=RolePanelView(),ephemeral=True)
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
@@ -480,7 +502,8 @@ class StaffMemberSelect(discord.ui.UserSelect):
 
 class StaffRoleSelect(discord.ui.Select):
     def __init__(self):
-        options=[discord.SelectOption(label=name,value=key) for key,name in STAFF_ROLES.items()]
+        options=[discord.SelectOption(label=name,value=key,description="Служебная роль") for key,name in STAFF_ROLES.items()]
+        options += [discord.SelectOption(label=name,value=f"league_{key}",description="Доступ игрока к лиге") for key,name in LEAGUE_ROLES.items()]
         super().__init__(placeholder="Выбери роль",options=options,min_values=1,max_values=1,row=1)
     async def callback(self,interaction):
         self.view.role_key=self.values[0]
@@ -494,10 +517,16 @@ class RolePanelView(discord.ui.View):
         self.add_item(StaffMemberSelect()); self.add_item(StaffRoleSelect())
 
     async def selected(self,interaction):
-        if not can_manage_staff(interaction.user):
+        if not can_use_role_panel(interaction.user):
             await interaction.response.send_message("Недостаточно прав.",ephemeral=True); return None,None
         if not self.target_id or not self.role_key:
             await interaction.response.send_message("Сначала выбери участника и роль.",ephemeral=True); return None,None
+        if self.role_key in STAFF_ROLES and not can_manage_staff(interaction.user):
+            await interaction.response.send_message("Служебные роли Owner/Admin/Curator может выдавать только владелец или Owner.",ephemeral=True); return None,None
+        if self.role_key.startswith("league_"):
+            target_league=self.role_key.removeprefix("league_")
+            if not can_manage_staff(interaction.user) and curator_league(interaction.user)!=target_league:
+                await interaction.response.send_message("Куратор может выдавать и снимать только роль своей лиги.",ephemeral=True); return None,None
         member=interaction.guild.get_member(self.target_id)
         roles=await ensure_staff_roles(interaction.guild)
         return member,roles.get(self.role_key)
@@ -531,9 +560,9 @@ class DashboardView(discord.ui.View):
 
     @discord.ui.button(label="Управление ролями",emoji="🛡️",style=discord.ButtonStyle.danger,custom_id="dashboard:roles")
     async def open_roles(self,interaction,button):
-        if not can_manage_staff(interaction.user):
-            return await interaction.response.send_message("Этот раздел доступен только владельцу сервера или Owner.",ephemeral=True)
-        await interaction.response.send_message(embed=discord.Embed(title="🛡️ Роли персонала",description="Выбери участника и роль. Затем нажми **Выдать** или **Снять**.\n\n👑 Owner — полное управление\n🛡️ Admin — результаты и поддержка\n⚪🟢🟣🔴 Curator — управление своей лигой",color=discord.Color.red()),view=RolePanelView(),ephemeral=True)
+        if not can_use_role_panel(interaction.user):
+            return await interaction.response.send_message("Этот раздел доступен Owner и кураторам лиг.",ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title="🛡️ Роли и доступ к лигам",description="Выбери участника и роль. Затем нажми **Выдать** или **Снять**.\n\n🟢 Prospect · 🟣 Division · 🔴 Pro — роли доступа игроков\n👑 Owner · 🛡️ Admin · Curator — служебные роли\n\nКуратор может выдавать только доступ к своей лиге.",color=discord.Color.red()),view=RolePanelView(),ephemeral=True)
 
 
 class TicketView(discord.ui.View):
@@ -968,6 +997,14 @@ async def setup(interaction:discord.Interaction):
             curator=staff_roles.get(f"curator_{name.lower()}")
             if curator:
                 await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
+            if name != "Default":
+                league_role=staff_roles[f"league_{name.lower()}"]
+                await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False)
+                await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True)
+                await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
+                await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
+            else:
+                await cat.set_permissions(g.default_role,view_channel=True,connect=True,send_messages=True,read_message_history=True)
             await sync_channels(cat, text_names=("🎮・ranked",), voice_names=(f"🔊 Lobby {i}",), preserve_voice_prefixes=("🛡 CT · #", "💣 T · #"))
             ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
             lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
@@ -975,6 +1012,9 @@ async def setup(interaction:discord.Interaction):
                 lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=LOBBY_SIZE)
             if lobby.user_limit != LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="SEOR: синхронизация LOBBY_SIZE")
+            for managed_channel in (ranked,lobby):
+                if managed_channel and not managed_channel.permissions_synced:
+                    await managed_channel.edit(sync_permissions=True,reason="SEOR: синхронизация доступа к лиге")
             if not ranked.last_message_id:
                 msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
     private=discord.utils.get(g.categories,name="🎧 SEOR PRIVATE") or await g.create_category("🎧 SEOR PRIVATE")
@@ -1003,7 +1043,7 @@ async def setup(interaction:discord.Interaction):
     await text(admin,"📋・логи-бота",overwrites=admin_overwrites)
     if not review.last_message_id:
         await review.send(embed=discord.Embed(title="🧾 Проверка результатов",description="Сюда поступают скриншоты игроков. Администратор проверяет данные и нажимает **Принять** или **Отклонить**.",color=color()))
-    await interaction.followup.send("Готово: структура синхронизирована — лишние управляемые каналы удалены, нужные добавлены. Посторонние категории не затронуты.",ephemeral=True)
+    await interaction.followup.send("Готово: структура синхронизирована — лишние управляемые каналы удалены, нужные добавлены. Посторонние кате��ории не затронуты.",ephemeral=True)
 
 
 @bot.tree.command(name="delete",description="Удалить созданную ботом структуру")
@@ -1023,7 +1063,7 @@ async def delete_setup(interaction:discord.Interaction,confirm:str):
             except discord.HTTPException: pass
         try: await cat.delete(reason=f"SEOR /delete by {interaction.user}")
         except discord.HTTPException: pass
-    for role_name in STAFF_ROLES.values():
+    for role_name in tuple(STAFF_ROLES.values())+tuple(LEAGUE_ROLES.values()):
         role=discord.utils.get(interaction.guild.roles,name=role_name)
         if role:
             try: await role.delete(reason=f"SEOR /delete by {interaction.user}")

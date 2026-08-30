@@ -50,7 +50,7 @@ def league_of(channel: discord.abc.GuildChannel):
 
 
 def is_lobby(channel):
-    return isinstance(channel, discord.VoiceChannel) and channel.name.lower().startswith("lobby")
+    return isinstance(channel, discord.VoiceChannel) and "lobby" in channel.name.lower()
 
 
 def live_members(channel):
@@ -205,7 +205,7 @@ class ResultSubmitModal(discord.ui.Modal, title="Отправка результ
         if not (attachment.content_type or "").startswith("image/"):
             return await interaction.followup.send("Нужно отправить изображение, а не другой файл.", ephemeral=True)
         submission_id = db.create_submission(interaction.guild_id, match_id, interaction.user.id, a, b, attachment.url)
-        review = discord.utils.get(interaction.guild.text_channels, name="проверка-результатов")
+        review = next((c for c in interaction.guild.text_channels if c.name.endswith("проверка-результатов")), None)
         if not review:
             return await interaction.followup.send("Админ-канал не найден. Администратору нужно повторно выполнить `/setup`.", ephemeral=True)
         e = discord.Embed(
@@ -283,7 +283,7 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
         except Exception:
             return await interaction.response.send_message("Формат: `13:9`; одна команда должна иметь 13.", ephemeral=True)
         if not db.finish_match(self.match_id,a,b):
-            return await interaction.response.send_message("Матч не найден или уже завершён.", ephemeral=True)
+            return await interaction.response.send_message("Матч не най��ен или уже завершён.", ephemeral=True)
         e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
         await interaction.response.send_message(embed=e)
 
@@ -306,7 +306,7 @@ async def send_profile(interaction):
 
 async def update_queue(channel):
     if not is_lobby(channel) or not league_of(channel): return
-    text = discord.utils.get(channel.category.text_channels, name="ranked")
+    text = next((c for c in channel.category.text_channels if c.name.endswith("ranked")), None)
     if not text: return
     key=channel.id
     msg=None
@@ -433,70 +433,124 @@ async def on_voice_state_update(member,before,after):
 async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     g=interaction.guild
+
+    # /setup синхронизирует только структуру, которой управляет бот.
+    # Посторонние пользовательские категории и каналы не затрагиваются.
+    unique_managed = {
+        "📡 SEOR INFO": 1,
+        "⌨️ SEOR COMMANDS": 1,
+        "💬 SEOR COMMUNITY": 1,
+        "🆘 SEOR SUPPORT": 1,
+        "🎧 SEOR PRIVATE": 1,
+        "📮 SEOR RESULTS": 1,
+        "🛡️ SEOR STAFF": 1,
+    }
+    league_managed = {f"{emoji} SEOR {name.upper()}": 5 for name, (emoji, _) in LEAGUES.items()}
+    for cat_name, keep_count in {**unique_managed, **league_managed}.items():
+        same = [c for c in g.categories if c.name == cat_name]
+        for extra in same[keep_count:]:
+            for channel in list(extra.channels):
+                await channel.delete(reason="SEOR /setup: удаление лишнего канала")
+            await extra.delete(reason="SEOR /setup: удаление лишней категории")
+
+    # Категории ранних тестовых версий, которые больше не входят в схему.
+    legacy_names = {
+        "Prospect 🟢", "Prospect matches", "PROSPECT MATCHES",
+        "INFORMATION", "comand", "COMMAND", "COMMUNITY",
+        "📌 INFO", "▶️ START", "👥 COMMUNITY", "🎫 SUPPORT'S",
+        "🎧 ПРИВАТНЫЕ КАНАЛЫ", "📮 SEND RESULT'S", "🛡️ ADMINISTRATION",
+        "⚪ DEFAULT LEAGUE", "🟢 PROSPECT LEAGUE", "🟣 DIVISION LEAGUE", "🔴 PRO LEAGUE",
+    }
+    for old_cat in [c for c in g.categories if c.name in legacy_names]:
+        for channel in list(old_cat.channels):
+            await channel.delete(reason="SEOR /setup: очистка старой структуры")
+        await old_cat.delete(reason="SEOR /setup: очистка старой структуры")
+
     async def category(name):
         return discord.utils.get(g.categories, name=name) or await g.create_category(name)
     async def text(cat, name, **kwargs):
         return discord.utils.get(cat.text_channels, name=name) or await g.create_text_channel(name, category=cat, **kwargs)
+    async def sync_channels(cat, text_names=(), voice_names=(), preserve_voice_prefixes=()):
+        allowed_text=set(text_names); allowed_voice=set(voice_names)
+        for channel in list(cat.channels):
+            if isinstance(channel, discord.TextChannel) and channel.name not in allowed_text:
+                await channel.delete(reason="SEOR /setup: канал отсутствует в актуальной схеме")
+            elif isinstance(channel, discord.VoiceChannel):
+                preserved=any(channel.name.startswith(prefix) for prefix in preserve_voice_prefixes)
+                if channel.name not in allowed_voice and not preserved:
+                    await channel.delete(reason="SEOR /setup: голосовой канал отсутствует в актуальной схеме")
 
-    info = await category("📌 INFO")
-    for channel_name in ("📰│news", "📋│правила", "🛒│товары", "✉️│fpl-news"):
+    info = await category("📡 SEOR INFO")
+    info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
+    await sync_channels(info, text_names=info_names)
+    for channel_name in info_names:
         await text(info, channel_name)
 
-    start = await category("▶️ START")
-    await text(start, "📄│навигация")
-    dashboard = await text(start, "📊│дашборд")
-    await text(start, "🏅│топ-сервера")
+    start = await category("⌨️ SEOR COMMANDS")
+    await sync_channels(start, text_names=("🤖・команды", "📊・панель", "🏆・лидеры"))
+    await text(start, "🤖・команды")
+    dashboard = await text(start, "📊・панель")
+    await text(start, "🏆・лидеры")
     if not dashboard.last_message_id:
         e = discord.Embed(title="🎛 ПАНЕЛЬ УПРАВЛЕНИЯ", description="Всё управление проектом — в одном окне.\n\n📊 Профиль и статистика\n🏆 Рейтинг и место в таблице\n🎮 Последние матчи\n👥 Пати и совместная игра\n⚙️ Игровой аккаунт", color=color())
         await dashboard.send(embed=e, view=DashboardView())
 
-    community = await category("👥 COMMUNITY")
-    for channel_name in ("💬│общение", "⌨️│команды", "🟣│chat-division", "🟢│chat-prospect"):
+    community = await category("💬 SEOR COMMUNITY")
+    community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro", "🟣・чат-division", "🟡・чат-qualifications", "🛠️・чат-кураторов")
+    await sync_channels(community, text_names=community_names, voice_names=("🌐 Общий голос",))
+    for channel_name in community_names:
         await text(community, channel_name)
+    if not discord.utils.get(community.voice_channels, name="🌐 Общий голос"):
+        await g.create_voice_channel("🌐 Общий голос", category=community, user_limit=99)
 
-    support = await category("🎫 SUPPORT'S")
-    tickets = await text(support, "‼️│создать-тикет")
-    await text(support, "‼️│наказания")
+    support = await category("🆘 SEOR SUPPORT")
+    await sync_channels(support, text_names=("🎫・создать-тикет", "⚠️・наказания"))
+    tickets = await text(support, "🎫・создать-тикет")
+    await text(support, "⚠️・наказания")
     if not tickets.last_message_id:
         e = discord.Embed(title="🎧 ТЕХНИЧЕСКАЯ ПОДДЕРЖКА", description="Спорные результаты, регистрация, баги, жалобы и обжалования. Нажми кнопку — бот создаст приватный канал.", color=color())
         await tickets.send(embed=e, view=TicketView())
 
     for name,(emoji,_) in LEAGUES.items():
-        cat_name=f"{emoji} {name.upper()} LEAGUE"
+        cat_name=f"{emoji} SEOR {name.upper()}"
         cats=[c for c in g.categories if c.name == cat_name]
         while len(cats) < 5:
             cats.append(await g.create_category(cat_name))
         for i,cat in enumerate(cats[:5],1):
-            ranked=discord.utils.get(cat.text_channels,name="ranked") or await g.create_text_channel("ranked",category=cat)
-            lobby=discord.utils.get(cat.voice_channels,name=f"Lobby {i}")
+            await sync_channels(cat, text_names=("🎮・ranked",), voice_names=(f"🔊 Lobby {i}",), preserve_voice_prefixes=("🛡 CT · #", "💣 T · #"))
+            ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
+            lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
             if not lobby:
-                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"Lobby {i}",category=cat,user_limit=10)
+                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=10)
             if not ranked.last_message_id:
                 msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
-    private=discord.utils.get(g.categories,name="🎧 ПРИВАТНЫЕ КАНАЛЫ") or await g.create_category("🎧 ПРИВАТНЫЕ КАНАЛЫ")
-    panel=discord.utils.get(private.text_channels,name="🖥️│настройка") or await g.create_text_channel("🖥️│настройка",category=private)
-    if not discord.utils.get(private.voice_channels,name="➕ Создать комнату"):
-        await g.create_voice_channel("➕ Создать комнату",category=private)
+    private=discord.utils.get(g.categories,name="🎧 SEOR PRIVATE") or await g.create_category("🎧 SEOR PRIVATE")
+    await sync_channels(private, text_names=("⚙️・управление-комнатой",), voice_names=("➕ Создать комнату SEOR",), preserve_voice_prefixes=("🏠 Комната ",))
+    panel=discord.utils.get(private.text_channels,name="⚙️・управление-комнатой") or await g.create_text_channel("⚙️・управление-комнатой",category=private)
+    if not discord.utils.get(private.voice_channels,name="➕ Создать комнату SEOR"):
+        await g.create_voice_channel("➕ Создать комнату SEOR",category=private)
     if not panel.last_message_id:
         e=discord.Embed(title="🎧 Управление приватной комнатой",description="Зайди в **➕ Создать комнату** — бот создаст твой голосовой канал и перенесёт тебя. Настраивай его кнопками ниже. Комната удалится, когда опустеет.",color=color())
         await panel.send(embed=e,view=RoomPanel())
 
-    results = await category("📮 SEND RESULT'S")
-    send_results = await text(results, "📌│отправить-результаты")
-    await text(results, "📊│история-игр")
+    results = await category("📮 SEOR RESULTS")
+    await sync_channels(results, text_names=("📤・отправить-результаты", "📚・история-игр"))
+    send_results = await text(results, "📤・отправить-результаты")
+    await text(results, "📚・история-игр")
     if not send_results.last_message_id:
         e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
         await send_results.send(embed=e,view=ResultSubmitView())
 
     admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True)}
-    admin = discord.utils.get(g.categories,name="🛡️ ADMINISTRATION") or await g.create_category("🛡️ ADMINISTRATION",overwrites=admin_overwrites)
-    review = await text(admin,"проверка-результатов",overwrites=admin_overwrites)
-    await text(admin,"регистрация-игр",overwrites=admin_overwrites)
-    await text(admin,"управление-матчами",overwrites=admin_overwrites)
-    await text(admin,"логи-бота",overwrites=admin_overwrites)
+    admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
+    await sync_channels(admin, text_names=("✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота"))
+    review = await text(admin,"✅・проверка-результатов",overwrites=admin_overwrites)
+    await text(admin,"📝・регистрация-игр",overwrites=admin_overwrites)
+    await text(admin,"🎛️・управление-матчами",overwrites=admin_overwrites)
+    await text(admin,"📋・логи-бота",overwrites=admin_overwrites)
     if not review.last_message_id:
         await review.send(embed=discord.Embed(title="🧾 Проверка результатов",description="Сюда поступают скриншоты игроков. Администратор проверяет данные и нажимает **Принять** или **Отклонить**.",color=color()))
-    await interaction.followup.send("Готово: создана полная структура каналов, 20 лобби, панели, тикеты и админ-проверка результатов.",ephemeral=True)
+    await interaction.followup.send("Готово: структура синхронизирована — лишние управляемые каналы удалены, нужные добавлены. Посторонние категории не затронуты.",ephemeral=True)
 
 
 @bot.tree.command(name="profile",description="Показать игровой профиль")

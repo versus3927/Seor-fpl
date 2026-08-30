@@ -31,6 +31,12 @@ def init_db():
           team_a TEXT NOT NULL, team_b TEXT NOT NULL,
           score_a INTEGER, score_b INTEGER, lobby_url TEXT,
           status TEXT NOT NULL DEFAULT 'waiting', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS result_submissions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
+          match_id INTEGER NOT NULL, submitter_id INTEGER NOT NULL,
+          score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
+          screenshot_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+          reviewer_id INTEGER, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS config(
           guild_id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
         """)
@@ -66,6 +72,25 @@ def match(match_id:int):
 def set_lobby(match_id:int,url:str):
     with connect() as con:
         con.execute("UPDATE matches SET lobby_url=?,status='playing' WHERE id=?",(url,match_id))
+
+def create_submission(guild_id:int,match_id:int,submitter_id:int,score_a:int,score_b:int,screenshot_url:str):
+    with connect() as con:
+        cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url) VALUES(?,?,?,?,?,?)",(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url))
+        return cur.lastrowid
+
+def submission(submission_id:int):
+    with connect() as con:
+        row=con.execute("SELECT * FROM result_submissions WHERE id=?",(submission_id,)).fetchone()
+        return dict(row) if row else None
+
+def review_submission(submission_id:int,status:str,reviewer_id:int,reason:str|None=None):
+    with connect() as con:
+        cur=con.execute("UPDATE result_submissions SET status=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,reviewer_id,reason,submission_id))
+        return cur.rowcount == 1
+
+def recent_matches(guild_id:int,limit:int=10):
+    with connect() as con:
+        return [dict(x) for x in con.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit))]
 
 def finish_match(match_id:int,score_a:int,score_b:int):
     with connect() as con:

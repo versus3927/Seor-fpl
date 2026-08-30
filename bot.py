@@ -28,6 +28,7 @@ MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami"]
 intents = discord.Intents.default()
 intents.members = True
 intents.voice_states = True
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 queue_messages = {}
 starting = set()
@@ -158,6 +159,105 @@ class GameIdModal(discord.ui.Modal, title="Игровой профиль"):
         await interaction.response.send_message("Игровой ID сохранён.", ephemeral=True)
 
 
+class ResultSubmitView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Отправить результат", emoji="📌", style=discord.ButtonStyle.success, custom_id="result:submit")
+    async def submit(self, interaction, button):
+        await interaction.response.send_modal(ResultSubmitModal())
+
+
+class ResultSubmitModal(discord.ui.Modal, title="Отправка результата"):
+    match_id = discord.ui.TextInput(label="ID матча", placeholder="Например: 700", max_length=10)
+    score = discord.ui.TextInput(label="Счёт", placeholder="13:9", max_length=7)
+
+    def __init__(self, match_id=None):
+        super().__init__()
+        if match_id is not None:
+            self.match_id.default = str(match_id)
+
+    async def on_submit(self, interaction):
+        try:
+            match_id = int(str(self.match_id))
+            a, b = [int(x.strip()) for x in str(self.score).replace("-", ":").split(":", 1)]
+            assert (a == 13 or b == 13) and a != b and min(a, b) >= 0
+        except Exception:
+            return await interaction.response.send_message("Проверь ID и счёт. Пример счёта: `13:9`.", ephemeral=True)
+        match = db.match(match_id)
+        if not match:
+            return await interaction.response.send_message("Матч с таким ID не найден.", ephemeral=True)
+        players = {int(x) for x in (match["team_a"] + "," + match["team_b"]).split(",")}
+        if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("Ты не являешься участником этого матча.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Теперь отправь **одним следующим сообщением** скриншот итогового счёта матча `#{match_id}`. У тебя 3 минуты.",
+            ephemeral=True,
+        )
+        def check(message):
+            return message.author.id == interaction.user.id and message.channel.id == interaction.channel_id and bool(message.attachments)
+        try:
+            message = await bot.wait_for("message", timeout=180, check=check)
+        except asyncio.TimeoutError:
+            return await interaction.followup.send("Время ожидания скриншота истекло. Нажми кнопку ещё раз.", ephemeral=True)
+        attachment = message.attachments[0]
+        if not (attachment.content_type or "").startswith("image/"):
+            return await interaction.followup.send("Нужно отправить изображение, а не другой файл.", ephemeral=True)
+        submission_id = db.create_submission(interaction.guild_id, match_id, interaction.user.id, a, b, attachment.url)
+        review = discord.utils.get(interaction.guild.text_channels, name="проверка-результатов")
+        if not review:
+            return await interaction.followup.send("Админ-канал не найден. Администратору нужно повторно выполнить `/setup`.", ephemeral=True)
+        e = discord.Embed(
+            title=f"🧾 Проверка результата №{submission_id}",
+            description=f"Матч: **#{match_id}**\nСчёт: **{a}:{b}**\nОтправил: {interaction.user.mention}\nСтатус: **ожидает проверки**",
+            color=discord.Color.orange(),
+        )
+        e.set_image(url=attachment.url)
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(label="Принять", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"result:approve:{submission_id}"))
+        view.add_item(discord.ui.Button(label="Отклонить", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"result:reject:{submission_id}"))
+        await review.send(embed=e, view=view)
+        try: await message.delete()
+        except discord.HTTPException: pass
+        await interaction.followup.send(f"Результат №{submission_id} отправлен администрации.", ephemeral=True)
+
+
+class DashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Мой профиль", emoji="👤", style=discord.ButtonStyle.primary, custom_id="dashboard:profile")
+    async def profile_button(self, interaction, button):
+        await send_profile(interaction)
+
+    @discord.ui.button(label="Последние матчи", emoji="🎮", style=discord.ButtonStyle.secondary, custom_id="dashboard:matches")
+    async def matches_button(self, interaction, button):
+        rows = db.recent_matches(interaction.guild_id, 10)
+        text = "\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'} · {m['status']}" for m in rows) or "Матчей пока нет."
+        await interaction.response.send_message(embed=discord.Embed(title="🎮 Последние матчи", description=text, color=color()), ephemeral=True)
+
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Создать тикет", emoji="🎫", style=discord.ButtonStyle.success, custom_id="ticket:create")
+    async def create_ticket(self, interaction, button):
+        guild = interaction.guild
+        existing = discord.utils.get(guild.text_channels, topic=f"ticket-owner:{interaction.user.id}")
+        if existing:
+            return await interaction.response.send_message(f"У тебя уже есть тикет: {existing.mention}", ephemeral=True)
+        category = discord.utils.get(guild.categories, name="🎫 TICKETS") or await guild.create_category("🎫 TICKETS")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        channel = await guild.create_text_channel(f"ticket-{interaction.user.name}"[:90], category=category, topic=f"ticket-owner:{interaction.user.id}", overwrites=overwrites)
+        await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказательства. Администраторы с правом Administrator видят этот канал.")
+        await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
+
+
 class LobbyModal(discord.ui.Modal, title="Ссылка на лобби"):
     url = discord.ui.TextInput(label="Ссылка", placeholder="https://...", max_length=300)
     def __init__(self, match_id):
@@ -257,7 +357,7 @@ async def start_match(lobby,text):
 @bot.event
 async def setup_hook():
     db.init_db()
-    bot.add_view(QueueView()); bot.add_view(RoomPanel())
+    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView())
     if GUILD_ID:
         guild=discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -279,7 +379,32 @@ async def on_interaction(interaction):
     if cid.startswith("match:lobby:"):
         await interaction.response.send_modal(LobbyModal(int(cid.rsplit(":",1)[1])))
     elif cid.startswith("match:result:"):
-        await interaction.response.send_modal(ResultModal(int(cid.rsplit(":",1)[1])))
+        await interaction.response.send_modal(ResultSubmitModal(int(cid.rsplit(":",1)[1])))
+    elif cid.startswith("result:approve:") or cid.startswith("result:reject:"):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("Нужны права управления сервером.", ephemeral=True)
+        submission_id = int(cid.rsplit(":", 1)[1])
+        sub = db.submission(submission_id)
+        if not sub or sub["status"] != "pending":
+            return await interaction.response.send_message("Заявка уже обработана или не найдена.", ephemeral=True)
+        approved = cid.startswith("result:approve:")
+        if approved:
+            if not db.finish_match(sub["match_id"], sub["score_a"], sub["score_b"]):
+                return await interaction.response.send_message("Матч уже завершён или не найден.", ephemeral=True)
+            db.review_submission(submission_id, "approved", interaction.user.id)
+            status, clr = "✅ принят", discord.Color.green()
+            history = discord.utils.get(interaction.guild.text_channels, name="история-игр")
+            if history:
+                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
+                e.set_image(url=sub["screenshot_url"])
+                await history.send(embed=e)
+        else:
+            db.review_submission(submission_id, "rejected", interaction.user.id)
+            status, clr = "❌ отклонён", discord.Color.red()
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color = clr
+        embed.description = (embed.description or "") + f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
+        await interaction.response.edit_message(embed=embed, view=None)
 
 
 @bot.event
@@ -307,19 +432,70 @@ async def on_voice_state_update(member,before,after):
 async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     g=interaction.guild
+    async def category(name):
+        return discord.utils.get(g.categories, name=name) or await g.create_category(name)
+    async def text(cat, name, **kwargs):
+        return discord.utils.get(cat.text_channels, name=name) or await g.create_text_channel(name, category=cat, **kwargs)
+
+    info = await category("📌 INFO")
+    for channel_name in ("📰│news", "📋│правила", "🛒│товары", "✉️│fpl-news"):
+        await text(info, channel_name)
+
+    start = await category("▶️ START")
+    await text(start, "📄│навигация")
+    dashboard = await text(start, "📊│дашборд")
+    await text(start, "🏅│топ-сервера")
+    if not dashboard.last_message_id:
+        e = discord.Embed(title="🎛 ПАНЕЛЬ УПРАВЛЕНИЯ", description="Всё управление проектом — в одном окне.\n\n📊 Профиль и статистика\n🏆 Рейтинг и место в таблице\n🎮 Последние матчи\n👥 Пати и совместная игра\n⚙️ Игровой аккаунт", color=color())
+        await dashboard.send(embed=e, view=DashboardView())
+
+    community = await category("👥 COMMUNITY")
+    for channel_name in ("💬│общение", "⌨️│команды", "🟣│chat-division", "🟢│chat-prospect"):
+        await text(community, channel_name)
+
+    support = await category("🎫 SUPPORT'S")
+    tickets = await text(support, "‼️│создать-тикет")
+    await text(support, "‼️│наказания")
+    if not tickets.last_message_id:
+        e = discord.Embed(title="🎧 ТЕХНИЧЕСКАЯ ПОДДЕРЖКА", description="Спорные результаты, регистрация, баги, жалобы и обжалования. Нажми кнопку — бот создаст приватный канал.", color=color())
+        await tickets.send(embed=e, view=TicketView())
+
     for name,(emoji,_) in LEAGUES.items():
-        category=discord.utils.get(g.categories,name=f"{emoji} {name.upper()} LEAGUE") or await g.create_category(f"{emoji} {name.upper()} LEAGUE")
-        ranked=discord.utils.get(category.text_channels,name="ranked") or await g.create_text_channel("ranked",category=category)
-        if not any(is_lobby(x) for x in category.voice_channels):
-            lobby=await g.create_voice_channel("Lobby 1",category=category,user_limit=10)
-            await ranked.send(embed=queue_embed(lobby),view=QueueView())
+        cat_name=f"{emoji} {name.upper()} LEAGUE"
+        cats=[c for c in g.categories if c.name == cat_name]
+        while len(cats) < 5:
+            cats.append(await g.create_category(cat_name))
+        for i,cat in enumerate(cats[:5],1):
+            ranked=discord.utils.get(cat.text_channels,name="ranked") or await g.create_text_channel("ranked",category=cat)
+            lobby=discord.utils.get(cat.voice_channels,name=f"Lobby {i}")
+            if not lobby:
+                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"Lobby {i}",category=cat,user_limit=10)
+            if not ranked.last_message_id:
+                msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
     private=discord.utils.get(g.categories,name="🎧 ПРИВАТНЫЕ КАНАЛЫ") or await g.create_category("🎧 ПРИВАТНЫЕ КАНАЛЫ")
-    panel=discord.utils.get(private.text_channels,name="настройка") or await g.create_text_channel("настройка",category=private)
+    panel=discord.utils.get(private.text_channels,name="🖥️│настройка") or await g.create_text_channel("🖥️│настройка",category=private)
     if not discord.utils.get(private.voice_channels,name="➕ Создать комнату"):
         await g.create_voice_channel("➕ Создать комнату",category=private)
-    e=discord.Embed(title="🎧 Управление приватной комнатой",description="Зайди в **➕ Создать комнату** — бот создаст твой голосовой канал и перенесёт тебя. Настраивай его кнопками ниже. Комната удалится, когда опустеет.",color=color())
-    await panel.send(embed=e,view=RoomPanel())
-    await interaction.followup.send("Готово: лиги, очереди и приватные комнаты созданы.",ephemeral=True)
+    if not panel.last_message_id:
+        e=discord.Embed(title="🎧 Управление приватной комнатой",description="Зайди в **➕ Создать комнату** — бот создаст твой голосовой канал и перенесёт тебя. Настраивай его кнопками ниже. Комната удалится, когда опустеет.",color=color())
+        await panel.send(embed=e,view=RoomPanel())
+
+    results = await category("📮 SEND RESULT'S")
+    send_results = await text(results, "📌│отправить-результаты")
+    await text(results, "📊│история-игр")
+    if not send_results.last_message_id:
+        e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
+        await send_results.send(embed=e,view=ResultSubmitView())
+
+    admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True)}
+    admin = discord.utils.get(g.categories,name="🛡️ ADMINISTRATION") or await g.create_category("🛡️ ADMINISTRATION",overwrites=admin_overwrites)
+    review = await text(admin,"проверка-результатов",overwrites=admin_overwrites)
+    await text(admin,"регистрация-игр",overwrites=admin_overwrites)
+    await text(admin,"управление-матчами",overwrites=admin_overwrites)
+    await text(admin,"логи-бота",overwrites=admin_overwrites)
+    if not review.last_message_id:
+        await review.send(embed=discord.Embed(title="🧾 Проверка результатов",description="Сюда поступают скриншоты игроков. Администратор проверяет данные и нажимает **Принять** или **Отклонить**.",color=color()))
+    await interaction.followup.send("Готово: создана полная структура каналов, 20 лобби, панели, тикеты и админ-проверка результатов.",ephemeral=True)
 
 
 @bot.tree.command(name="profile",description="Показать игровой профиль")
@@ -331,8 +507,29 @@ async def set_game_id(interaction:discord.Interaction): await interaction.respon
 
 
 @bot.tree.command(name="result",description="Отправить результат матча")
-@app_commands.describe(match_id="Номер матча")
-async def result(interaction:discord.Interaction,match_id:int): await interaction.response.send_modal(ResultModal(match_id))
+async def result(interaction:discord.Interaction): await interaction.response.send_modal(ResultSubmitModal())
+
+
+@bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,score_b:int):
+    if not ((score_a == 13 or score_b == 13) and score_a != score_b and min(score_a,score_b) >= 0):
+        return await interaction.response.send_message("Некорректный счёт: одна команда должна иметь 13.",ephemeral=True)
+    if not db.finish_match(match_id,score_a,score_b):
+        return await interaction.response.send_message("Матч уже завершён или не найден.",ephemeral=True)
+    history=discord.utils.get(interaction.guild.text_channels,name="история-игр")
+    if history:
+        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
+    await interaction.response.send_message(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
+
+
+@bot.tree.command(name="match_info",description="Показать информацию о матче")
+async def match_info(interaction:discord.Interaction,match_id:int):
+    m=db.match(match_id)
+    if not m: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+    a=" ".join(f"<@{x}>" for x in m["team_a"].split(",")); b=" ".join(f"<@{x}>" for x in m["team_b"].split(","))
+    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{m['league']}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
+    await interaction.response.send_message(embed=e,ephemeral=True)
 
 
 @bot.tree.command(name="top",description="Показать топ-10 игроков")

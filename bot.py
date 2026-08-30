@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
 import db
+from profile_card import build_profile_card
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -288,19 +289,19 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
 
 
 async def send_profile(interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
     p = db.player(interaction.guild_id, interaction.user.id)
-    kd = p["kills"] / max(1,p["deaths"])
-    e=discord.Embed(title=f"Профиль · {interaction.user.display_name}",color=color())
-    e.add_field(name="Игровой ID",value=p["game_id"] or "не указан")
-    e.add_field(name="Рейтинг",value=str(p["points"]))
-    e.add_field(name="Матчи",value=str(p["games"]))
-    e.add_field(name="Победы / поражения",value=f"{p['wins']} / {p['losses']}")
-    e.add_field(name="K/D",value=f"{kd:.2f}")
+    recent=[]
+    for m in db.recent_matches(interaction.guild_id,50):
+        ids=set((m["team_a"]+","+m["team_b"]).split(","))
+        if str(interaction.user.id) in ids: recent.append(m)
+    avatar_url=interaction.user.display_avatar.with_size(256).url
+    card=await build_profile_card(p,interaction.user.display_name,str(avatar_url),recent)
     view=discord.ui.View(timeout=60)
     button=discord.ui.Button(label="Изменить игровой ID",style=discord.ButtonStyle.primary)
     async def cb(i): await i.response.send_modal(GameIdModal())
     button.callback=cb; view.add_item(button)
-    await interaction.response.send_message(embed=e,view=view,ephemeral=True)
+    await interaction.followup.send(file=discord.File(card,"profile.png"),view=view,ephemeral=True)
 
 
 async def update_queue(channel):
@@ -393,7 +394,7 @@ async def on_interaction(interaction):
                 return await interaction.response.send_message("Матч уже завершён или не найден.", ephemeral=True)
             db.review_submission(submission_id, "approved", interaction.user.id)
             status, clr = "✅ принят", discord.Color.green()
-            history = discord.utils.get(interaction.guild.text_channels, name="история-игр")
+            history = next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")), None)
             if history:
                 e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
                 e.set_image(url=sub["screenshot_url"])
@@ -519,7 +520,7 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
         return await interaction.response.send_message("Матч уже завершён или не найден.",ephemeral=True)
     history=discord.utils.get(interaction.guild.text_channels,name="история-игр")
     if history:
-        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
+        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зареги��трирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
     await interaction.response.send_message(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
 
 

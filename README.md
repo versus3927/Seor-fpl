@@ -1,1 +1,209 @@
+# Arena Queue — Discord-бот для матчей Standoff 2
 
+Самостоятельная реализация бота по логике из референс-видео. Внешний вид и названия немного изменены, но основной сценарий сохранён.
+
+## Что умеет
+
+- четыре лиги: **Default / Prospect / Division / Pro**;
+- отдельные очереди `ranked` и голосовые `Lobby`;
+- автоматическое добавление игрока в очередь при входе в голосовой канал;
+- запуск матча при наборе 10 игроков и случайное деление 5×5;
+- закрытые голосовые комнаты команд CT и T;
+- случайный выбор карты и хоста;
+- карточка матча с составами, игровыми ID и кнопками;
+- отправка хостом ссылки на игровое лобби;
+- приём результата `13:Х`, начисление рейтинга и статистики;
+- профиль игрока и привязка Standoff 2 ID;
+- изображение топ-10 игроков;
+- создание личной голосовой комнаты и управление названием, лимитом, доступом и видимостью;
+- отправка результата в два шага: ID/счёт, затем скриншот игры;
+- закрытый админ-канал проверки с кнопками «Принять» и «Отклонить»;
+- ручная регистрация результата администрацией;
+- тикеты поддержки;
+- полная структура каналов из видео, включая пока пустые разделы;
+- SQLite — данные не пропадут после перезапуска.
+
+> Это новый код, написанный с нуля по видимому поведению интерфейса. Чужой исходный код, логотипы и закрытые материалы не копировались.
+
+## 1. Создание приложения Discord
+
+1. Открой [Discord Developer Portal](https://discord.com/developers/applications).
+2. Нажми **New Application**, укажи название.
+3. Перейди в **Bot** → **Add Bot**.
+4. Включи **Server Members Intent** и **Message Content Intent**. Voice State intent доступен по умолчанию.
+5. Нажми **Reset Token**, скопируй токен и никому его не отправляй.
+6. В **OAuth2 → URL Generator** выбери:
+   - scopes: `bot`, `applications.commands`;
+   - bot permissions: `Manage Channels`, `Manage Roles`, `Move Members`, `View Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History`, `Connect`, `Speak`.
+7. Открой сгенерированную ссылку и добавь бота на сервер.
+
+Рекомендуется дать боту роль выше обычных пользовательских ролей. Иначе перенос игроков и настройка закрытых каналов могут не работать.
+
+## 2. Быстрый запуск на Windows
+
+Установи Python 3.11–3.13 и выполни в папке проекта:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+notepad .env
+py bot.py
+```
+
+В `.env` вставь токен и ID тестового сервера:
+
+```env
+DISCORD_TOKEN=токен_бота
+GUILD_ID=123456789012345678
+BOT_NAME=Arena Queue
+ACCENT_COLOR=7C3AED
+```
+
+Чтобы скопировать ID сервера, включи **Настройки Discord → Расширенные → Режим разработчика**, затем нажми правой кнопкой на сервер → **Копировать ID**.
+
+## 3. Запуск на Linux / VPS
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+nano .env
+python bot.py
+```
+
+Для постоянной работы можно использовать `systemd`:
+
+```ini
+# /etc/systemd/system/arena-queue.service
+[Unit]
+Description=Arena Queue Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/arena_queue_bot
+ExecStart=/home/ubuntu/arena_queue_bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/ubuntu/arena_queue_bot/.env
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now arena-queue
+sudo systemctl status arena-queue
+journalctl -u arena-queue -f
+```
+
+## 4. Запуск через Docker
+
+```bash
+cp .env.example .env
+# Заполни .env
+docker compose up -d --build
+docker compose logs -f
+```
+
+База сохраняется в локальной папке `data/`.
+
+## 5. Развёртывание на Railway
+
+1. Создай новый пустой репозиторий GitHub и загрузи в него содержимое папки проекта (не сам ZIP).
+2. Открой [Railway](https://railway.com/), нажми **New Project → Deploy from GitHub repo** и выбери репозиторий.
+3. В сервисе открой **Variables** и добавь:
+   - `DISCORD_TOKEN` — токен Discord-бота;
+   - `GUILD_ID` — ID сервера;
+   - `BOT_NAME` — например `Arena Queue`;
+   - `ACCENT_COLOR` — например `7C3AED`;
+   - `GEMINI_API_KEY` — ключ Gemini API для фона профиля;
+   - `GEMINI_IMAGE_MODEL` — `gemini-2.5-flash-image`;
+   - `PROFILE_IMAGE_PROMPT` — описание желаемого оформления профиля.
+4. Для постоянной базы добавь **Volume** и укажи путь монтирования `/app/data`.
+5. Нажми **Deploy**. Команда запуска уже задана в `railway.json` и `Procfile`.
+6. В логах должна появиться строка `... ready`. После этого выполни `/setup` в Discord.
+
+Важно: бесплатного постоянно работающего тарифа у Railway может не быть; стоимость зависит от текущего тарифа аккаунта.
+
+## 6. Первичная настройка сервера
+
+1. Запусти бота.
+2. На сервере выполни команду `/setup` от имени администратора.
+3. Бот создаст INFO, START, COMMUNITY, SUPPORT'S, приватные комнаты, SEND RESULT'S, закрытый ADMINISTRATION и по пять Lobby для каждой из четырёх лиг.
+4. Игрок выполняет `/set_game_id` и вводит игровой ID.
+5. Игроки заходят в нужный `Lobby 1`. При 10 участниках матч создаётся автоматически.
+6. Выбранный хост создаёт лобби в игре и нажимает **Отправить ссылку**.
+7. После матча нажмите **Отправить результат** или используйте `/result`, введи ID и счёт, затем следующим сообщением прикрепи скриншот игры.
+8. Заявка появится в закрытом канале `проверка-результатов`. Администратор нажимает **Принять** или **Отклонить**; принятый матч публикуется в `история-игр` и обновляет рейтинг.
+
+## Команды
+
+| Команда | Назначение |
+|---|---|
+| `/setup` | Создать все категории и каналы; только администратор |
+| `/profile` | Показать личный профиль |
+| `/set_game_id` | Сохранить игровой ID |
+| `/result` | Ввести ID/счёт и затем отправить скриншот |
+| `/match_info match_id` | Показать карточку матча |
+| `/admin_result match_id score_a score_b` | Вручную принять результат; только администрация |
+| `/top` | Создать изображение топ-10 |
+
+## Автоматическая картинка профиля через Gemini
+
+В Railway → **Variables → Raw Editor** добавь:
+
+```env
+GEMINI_API_KEY=ТВОЙ_КЛЮЧ_GEMINI
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+PROFILE_IMAGE_PROMPT=Dark competitive esports profile background, black and deep violet, clean negative space, no text, no logos
+```
+
+Ключ не отправляй в Discord или чат. При первом `/profile` Gemini создаёт фоновый арт, а бот самостоятельно накладывает имя, ID, лигу, ELO, статистику, карты и последние матчи. Картинка кэшируется и автоматически создаётся заново при изменении рейтинга, матчей, побед, убийств, смертей или `PROFILE_IMAGE_PROMPT`. Если API временно недоступен, бот выдаст профиль с локальным фоном.
+
+После изменения переменных сделай Railway Redeploy. Первая генерация может занять несколько секунд и расходует квоту Gemini API.
+
+## Начисление рейтинга
+
+- начальный рейтинг: `1000`;
+- победа: `+25`;
+- поражение: `−18`;
+- рейтинг не может стать отрицательным.
+
+Пороги лиг находятся в начале `bot.py` в переменной `LEAGUES`. Карты — в `MAPS`. Цвет карточек задаётся через `ACCENT_COLOR` в `.env`.
+
+## Важные права и ограничения
+
+- Для `/setup` нужны права администратора.
+- Боту нужны `Manage Channels` и `Move Members`.
+- Роль бота должна быть выше ролей игроков, которых он перемещает.
+- Для быстрой регистрации slash-��оманд укажи `GUILD_ID`. Без него команды синхронизируются глобально и могут появляться до часа.
+- Не публикуй `.env` и токен. Если токен попал в открытый доступ — немедленно сбрось его в Developer Portal.
+
+## Структура
+
+```text
+arena_queue_bot/
+├── bot.py                 # Discord, очереди, матчи, кнопки и комнаты
+├── db.py                  # SQLite и рейтинг
+├── requirements.txt
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+└── README.md
+```
+
+## Проверка перед запуском
+
+```bash
+python -m py_compile bot.py db.py
+```
+
+Если бот запустился, в консоли появится строка `... ready`. После изменения команд перезапусти процесс.

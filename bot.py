@@ -18,6 +18,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 BOT_NAME = os.getenv("BOT_NAME", "Arena Queue")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
+STAFF_ONLY_COMMANDS = os.getenv("STAFF_ONLY_COMMANDS", "true").lower() in {"1", "true", "yes", "on"}
 LEAGUES = {
     "Default": ("⚪", 1000),
     "Prospect": ("🟢", 1150),
@@ -25,6 +26,14 @@ LEAGUES = {
     "Pro": ("🔴", 1600),
 }
 MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami"]
+STAFF_ROLES = {
+    "owner": "👑 Owner",
+    "admin": "🛡️ Admin",
+    "curator_default": "⚪ Curator Default",
+    "curator_prospect": "🟢 Curator Prospect",
+    "curator_division": "🟣 Curator Division",
+    "curator_pro": "🔴 Curator Pro",
+}
 
 intents = discord.Intents.default()
 intents.members = True
@@ -38,6 +47,59 @@ room_owners = {}
 
 def color():
     return discord.Color(ACCENT)
+
+
+def has_role(member, role_name):
+    return any(role.name == role_name for role in member.roles)
+
+
+def can_manage_staff(member):
+    return member.id == member.guild.owner_id or has_role(member, STAFF_ROLES["owner"])
+
+
+def can_administer(member):
+    return can_manage_staff(member) or has_role(member, STAFF_ROLES["admin"])
+
+
+async def staff_command_access(interaction):
+    if not STAFF_ONLY_COMMANDS:
+        return True
+    if not interaction.guild:
+        return False
+    return interaction.user.id == interaction.guild.owner_id or any(has_role(interaction.user,name) for name in STAFF_ROLES.values())
+
+
+async def result_admin_access(interaction):
+    return bool(interaction.guild and can_administer(interaction.user))
+
+
+async def ensure_staff_roles(guild):
+    result={}
+    specs={
+        "owner": (discord.Color.gold(), discord.Permissions(administrator=True)),
+        "admin": (discord.Color.red(), discord.Permissions(manage_guild=True,manage_channels=True,manage_messages=True,moderate_members=True,move_members=True,mute_members=True)),
+        "curator_default": (discord.Color.light_grey(), discord.Permissions(move_members=True,mute_members=True)),
+        "curator_prospect": (discord.Color.green(), discord.Permissions(move_members=True,mute_members=True)),
+        "curator_division": (discord.Color.purple(), discord.Permissions(move_members=True,mute_members=True)),
+        "curator_pro": (discord.Color.magenta(), discord.Permissions(move_members=True,mute_members=True)),
+    }
+    for key,name in STAFF_ROLES.items():
+        role=discord.utils.get(guild.roles,name=name)
+        role_color,permissions=specs[key]
+        if not role:
+            try:
+                role=await guild.create_role(name=name,color=role_color,permissions=permissions,hoist=True,reason="SEOR: создание служебной роли")
+            except discord.Forbidden:
+                role=await guild.create_role(name=name,color=role_color,permissions=discord.Permissions.none(),hoist=True,reason="SEOR: создание роли без глобальных прав")
+        else:
+            try: await role.edit(color=role_color,permissions=permissions,hoist=True,reason="SEOR: синхронизация служебной роли")
+            except discord.Forbidden: pass
+        result[key]=role
+    owner=guild.get_member(guild.owner_id)
+    if owner and result["owner"] not in owner.roles:
+        try: await owner.add_roles(result["owner"],reason="SEOR: роль владельца сервера")
+        except discord.Forbidden: pass
+    return result
 
 
 def league_of(channel: discord.abc.GuildChannel):
@@ -258,12 +320,25 @@ DASHBOARD_SECTIONS={
     "matches":("🎮","Матчи","Последние игры, текущий статус и поиск по ID."),
     "party":("👥","Пати","Группа до трёх игроков для совместного подбора."),
     "account":("⚙️","Аккаунт","Игровой ID и данные регистрации."),
+    "roles":("🛡️","Роли","Создание и выдача служебных ролей проекта."),
 }
 
 
 def dashboard_panel_embed(section):
     emoji,title,description=DASHBOARD_SECTIONS[section]
-    return discord.Embed(title=f"{emoji} {title}",description=f"Выбери раздел в списке — доступные кнопки изменятся.\n\n**{title}** — {description}\n\n*Эта панель видна только тебе.*",color=color()).set_footer(text="SEOR CYBER · control center")
+    section_colors={
+        "stats":discord.Color.from_rgb(124,58,237),
+        "rating":discord.Color.gold(),
+        "matches":discord.Color.from_rgb(37,99,235),
+        "party":discord.Color.from_rgb(16,185,129),
+        "account":discord.Color.from_rgb(100,116,139),
+        "roles":discord.Color.from_rgb(239,68,68),
+    }
+    e=discord.Embed(title=f"{emoji} {title}",description=description,color=section_colors[section])
+    e.add_field(name="Навигация",value="Выбери раздел в меню ниже.",inline=True)
+    e.add_field(name="Доступ",value="Панель видна только тебе.",inline=True)
+    e.set_footer(text="SEOR CYBER • игровая панель")
+    return e
 
 
 class DashboardSectionSelect(discord.ui.Select):
@@ -296,9 +371,12 @@ class DashboardPanelView(discord.ui.View):
             self._button("Создать пати","➕",discord.ButtonStyle.success,self.party_create)
             self._button("Моё пати","👥",discord.ButtonStyle.primary,self.party_show)
             self._button("Покинуть","🚪",discord.ButtonStyle.danger,self.party_leave)
-        else:
+        elif section=="account":
             self._button("Изменить игровой ID","🪪",discord.ButtonStyle.primary,self.change_id)
             self._button("Данные аккаунта","📋",discord.ButtonStyle.secondary,self.account)
+        else:
+            self._button("Управление ролями","🛡️",discord.ButtonStyle.primary,self.role_panel)
+            self._button("Создать роли","➕",discord.ButtonStyle.success,self.create_roles)
 
     def _button(self,label,emoji,style,callback):
         b=discord.ui.Button(label=label,emoji=emoji,style=style,row=1); b.callback=callback; self.add_item(b)
@@ -335,6 +413,68 @@ class DashboardPanelView(discord.ui.View):
         p=db.player(i.guild_id,i.user.id)
         await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}**\nМатчей: **{p['games']}**",ephemeral=True)
 
+    async def role_panel(self,i):
+        if not can_manage_staff(i.user):
+            return await i.response.send_message("Управлять ролями может только владелец сервера или участник с ролью Owner.",ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и служебную роль, затем нажми **Выдать** или **Снять**.",color=color()),view=RolePanelView(),ephemeral=True)
+
+    async def create_roles(self,i):
+        if not can_manage_staff(i.user):
+            return await i.response.send_message("Создавать роли может только владелец сервера или Owner.",ephemeral=True)
+        await ensure_staff_roles(i.guild)
+        await i.response.send_message("Служебные роли созданы и синхронизированы.",ephemeral=True)
+
+
+class StaffMemberSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Выбери участника",min_values=1,max_values=1,row=0)
+    async def callback(self,interaction):
+        self.view.target_id=self.values[0].id
+        await interaction.response.defer()
+
+
+class StaffRoleSelect(discord.ui.Select):
+    def __init__(self):
+        options=[discord.SelectOption(label=name,value=key) for key,name in STAFF_ROLES.items()]
+        super().__init__(placeholder="Выбери роль",options=options,min_values=1,max_values=1,row=1)
+    async def callback(self,interaction):
+        self.view.role_key=self.values[0]
+        await interaction.response.defer()
+
+
+class RolePanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.target_id=None; self.role_key=None
+        self.add_item(StaffMemberSelect()); self.add_item(StaffRoleSelect())
+
+    async def selected(self,interaction):
+        if not can_manage_staff(interaction.user):
+            await interaction.response.send_message("Недостаточно прав.",ephemeral=True); return None,None
+        if not self.target_id or not self.role_key:
+            await interaction.response.send_message("Сначала выбери участника и роль.",ephemeral=True); return None,None
+        member=interaction.guild.get_member(self.target_id)
+        roles=await ensure_staff_roles(interaction.guild)
+        return member,roles.get(self.role_key)
+
+    @discord.ui.button(label="Выдать",emoji="✅",style=discord.ButtonStyle.success,row=2)
+    async def give(self,interaction,button):
+        member,role=await self.selected(interaction)
+        if not member or not role: return
+        try: await member.add_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+        except discord.Forbidden: return await interaction.response.send_message("Роль бота должна находиться выше выдаваемой роли.",ephemeral=True)
+        await interaction.response.send_message(f"{role.mention} выдана участнику {member.mention}.",ephemeral=True)
+
+    @discord.ui.button(label="Снять",emoji="➖",style=discord.ButtonStyle.danger,row=2)
+    async def remove(self,interaction,button):
+        member,role=await self.selected(interaction)
+        if not member or not role: return
+        if member.id==interaction.guild.owner_id and self.role_key=="owner":
+            return await interaction.response.send_message("Нельзя снять Owner с владельца сервера.",ephemeral=True)
+        try: await member.remove_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+        except discord.Forbidden: return await interaction.response.send_message("Роль бота должна находиться выше снимаемой роли.",ephemeral=True)
+        await interaction.response.send_message(f"{role.mention} снята с участника {member.mention}.",ephemeral=True)
+
 
 class DashboardView(discord.ui.View):
     def __init__(self):
@@ -344,6 +484,12 @@ class DashboardView(discord.ui.View):
     async def open_panel(self,interaction,button):
         await interaction.response.send_message(embed=dashboard_panel_embed("stats"),view=DashboardPanelView("stats"),ephemeral=True)
 
+    @discord.ui.button(label="Управление ролями",emoji="🛡️",style=discord.ButtonStyle.danger,custom_id="dashboard:roles")
+    async def open_roles(self,interaction,button):
+        if not can_manage_staff(interaction.user):
+            return await interaction.response.send_message("Этот раздел доступен только владельцу сервера или Owner.",ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title="🛡️ Роли персонала",description="Выбери участника и роль. Затем нажми **Выдать** или **Снять**.\n\n👑 Owner — полное управление\n🛡️ Admin — результаты и поддержка\n⚪🟢🟣🔴 Curator — управление своей лигой",color=discord.Color.red()),view=RolePanelView(),ephemeral=True)
+
 
 class TicketView(discord.ui.View):
     def __init__(self):
@@ -352,6 +498,7 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="Создать тикет", emoji="🎫", style=discord.ButtonStyle.success, custom_id="ticket:create")
     async def create_ticket(self, interaction, button):
         guild = interaction.guild
+        staff_roles = await ensure_staff_roles(guild)
         existing = discord.utils.get(guild.text_channels, topic=f"ticket-owner:{interaction.user.id}")
         if existing:
             return await interaction.response.send_message(f"У тебя уже есть тикет: {existing.mention}", ephemeral=True)
@@ -360,6 +507,8 @@ class TicketView(discord.ui.View):
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+            staff_roles["owner"]: discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),
+            staff_roles["admin"]: discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),
         }
         channel = await guild.create_text_channel(f"ticket-{interaction.user.name}"[:90], category=category, topic=f"ticket-owner:{interaction.user.id}", overwrites=overwrites)
         await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказательства. Администраторы с правом Administrator видят этот канал.")
@@ -489,7 +638,7 @@ async def on_interaction(interaction):
     elif cid.startswith("match:result:"):
         await interaction.response.send_modal(ResultSubmitModal(int(cid.rsplit(":",1)[1])))
     elif cid.startswith("result:approve:") or cid.startswith("result:reject:"):
-        if not interaction.user.guild_permissions.manage_guild:
+        if not can_administer(interaction.user):
             return await interaction.response.send_message("Нужны права управления сервером.", ephemeral=True)
         submission_id = int(cid.rsplit(":", 1)[1])
         sub = db.submission(submission_id)
@@ -540,6 +689,7 @@ async def on_voice_state_update(member,before,after):
 async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     g=interaction.guild
+    staff_roles=await ensure_staff_roles(g)
 
     # /setup синхронизирует только структуру, которой управляет бот.
     # Посторонние пользовательские категории и каналы не затрагиваются.
@@ -595,14 +745,25 @@ async def setup(interaction:discord.Interaction):
 
     start = await category("⌨️ SEOR COMMANDS")
     await sync_channels(start, text_names=("🤖・команды", "📊・дашборд", "🏆・топ-сервера"))
-    await text(start, "🤖・команды")
+    commands_channel=await text(start, "🤖・команды")
+    await commands_channel.set_permissions(g.default_role,view_channel=False,send_messages=False)
+    await commands_channel.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
+    owner_member=g.get_member(g.owner_id)
+    if owner_member:
+        await commands_channel.set_permissions(owner_member,view_channel=True,send_messages=True)
+    for role in staff_roles.values():
+        await commands_channel.set_permissions(role,view_channel=True,send_messages=True,read_message_history=True)
     dashboard = await text(start, "📊・дашборд")
     await text(start, "🏆・топ-сервера")
     async for old_message in dashboard.history(limit=20):
         if old_message.author == g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    e = discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ", description="Управляй игровым профилем и матчами из одного окна.\n\n📊 **Статистика** — профиль, K/D и форма\n🏆 **Рейтинг** — топ сервера и твоё место\n🎮 **Матчи** — история и поиск по ID\n👥 **Пати** — совместный подбор\n⚙️ **Аккаунт** — игровой ID и данные\n\n*Нажми кнопку — личная панель откроется только для тебя.*", color=color())
+    e = discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ", description="Твой центр управления матчами и профилем. Нажми кнопку ниже — панель откроется лично для тебя.", color=discord.Color.from_rgb(124,58,237))
+    e.add_field(name="👤 Игрок",value="Профиль • статистика • рейтинг",inline=True)
+    e.add_field(name="🎮 Матчи",value="История • поиск • результаты",inline=True)
+    e.add_field(name="👥 Команда",value="Пати • совместный подбор",inline=True)
+    e.add_field(name="🛡️ Персонал",value="Создание и выдача служебных ролей",inline=False)
     e.set_footer(text="SEOR CYBER · FACEIT STANDOFF 2")
     await dashboard.send(embed=e, view=DashboardView())
 
@@ -628,6 +789,9 @@ async def setup(interaction:discord.Interaction):
         while len(cats) < 5:
             cats.append(await g.create_category(cat_name))
         for i,cat in enumerate(cats[:5],1):
+            curator=staff_roles.get(f"curator_{name.lower()}")
+            if curator:
+                await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
             await sync_channels(cat, text_names=("🎮・ranked",), voice_names=(f"🔊 Lobby {i}",), preserve_voice_prefixes=("🛡 CT · #", "💣 T · #"))
             ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
             lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
@@ -652,7 +816,7 @@ async def setup(interaction:discord.Interaction):
         e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
         await send_results.send(embed=e,view=ResultSubmitView())
 
-    admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True)}
+    admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True),staff_roles["owner"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),staff_roles["admin"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
     admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
     await sync_channels(admin, text_names=("✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота"))
     review = await text(admin,"✅・проверка-результатов",overwrites=admin_overwrites)
@@ -664,20 +828,56 @@ async def setup(interaction:discord.Interaction):
     await interaction.followup.send("Готово: структура синхронизирована — лишние управляемые каналы удалены, нужные добавлены. Посторонние категории не затронуты.",ephemeral=True)
 
 
+@bot.tree.command(name="delete",description="Удалить созданную ботом структуру")
+@app_commands.describe(confirm="Для подтверждения напиши УДАЛИТЬ")
+async def delete_setup(interaction:discord.Interaction,confirm:str):
+    if not can_manage_staff(interaction.user):
+        return await interaction.response.send_message("Удалять структуру может только владелец сервера или Owner.",ephemeral=True)
+    if confirm.strip().upper() != "УДАЛИТЬ":
+        return await interaction.response.send_message("Отменено. Для подтверждения нужно написать `УДАЛИТЬ`.",ephemeral=True)
+    await interaction.response.send_message("Удаление структуры SEOR запущено.",ephemeral=True)
+    managed={"📡 SEOR INFO","⌨️ SEOR COMMANDS","💬 SEOR COMMUNITY","🆘 SEOR SUPPORT","🎧 SEOR PRIVATE","📮 SEOR RESULTS","🛡️ SEOR STAFF","🎫 TICKETS"}
+    managed.update(f"{emoji} SEOR {name.upper()}" for name,(emoji,_) in LEAGUES.items())
+    for cat in [c for c in interaction.guild.categories if c.name in managed]:
+        for channel in list(cat.channels):
+            try: await channel.delete(reason=f"SEOR /delete by {interaction.user}")
+            except discord.HTTPException: pass
+        try: await cat.delete(reason=f"SEOR /delete by {interaction.user}")
+        except discord.HTTPException: pass
+    for role_name in STAFF_ROLES.values():
+        role=discord.utils.get(interaction.guild.roles,name=role_name)
+        if role:
+            try: await role.delete(reason=f"SEOR /delete by {interaction.user}")
+            except discord.HTTPException: pass
+
+
+@bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
+async def roles_setup(interaction:discord.Interaction):
+    if not can_manage_staff(interaction.user):
+        return await interaction.response.send_message("Команда доступна только владельцу сервера или Owner.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    roles=await ensure_staff_roles(interaction.guild)
+    await interaction.followup.send("Роли готовы: "+", ".join(role.mention for role in roles.values()),ephemeral=True)
+
+
 @bot.tree.command(name="profile",description="Показать игровой профиль")
+@app_commands.check(staff_command_access)
 async def profile(interaction:discord.Interaction): await send_profile(interaction)
 
 
 @bot.tree.command(name="set_game_id",description="Сохранить игровой ID")
+@app_commands.check(staff_command_access)
 async def set_game_id(interaction:discord.Interaction): await interaction.response.send_modal(GameIdModal())
 
 
 @bot.tree.command(name="result",description="Отправить результат матча")
+@app_commands.check(staff_command_access)
 async def result(interaction:discord.Interaction): await interaction.response.send_modal(ResultSubmitModal())
 
 
 @bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")
-@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.check(staff_command_access)
+@app_commands.check(result_admin_access)
 async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,score_b:int):
     if not ((score_a == 13 or score_b == 13) and score_a != score_b and min(score_a,score_b) >= 0):
         return await interaction.response.send_message("Некорректный счёт: одна команда должна иметь 13.",ephemeral=True)
@@ -690,6 +890,7 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
 
 
 @bot.tree.command(name="match_info",description="Показать информацию о матче")
+@app_commands.check(staff_command_access)
 async def match_info(interaction:discord.Interaction,match_id:int):
     m=db.match(match_id)
     if not m: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
@@ -699,6 +900,7 @@ async def match_info(interaction:discord.Interaction,match_id:int):
 
 
 @bot.tree.command(name="top",description="Показать топ-10 игроков")
+@app_commands.check(staff_command_access)
 async def top(interaction:discord.Interaction):
     rows=db.leaders(interaction.guild_id)
     img=Image.new("RGB",(900,120+70*max(1,len(rows))),(10,14,22)); d=ImageDraw.Draw(img)
@@ -716,6 +918,19 @@ async def top(interaction:discord.Interaction):
 @setup.error
 async def setup_error(interaction,error):
     if isinstance(error,app_commands.MissingPermissions): await interaction.response.send_message("Нужны права администратора.",ephemeral=True)
+
+
+@bot.tree.error
+async def command_error(interaction,error):
+    if isinstance(error,app_commands.CheckFailure):
+        message="Команды временно доступны только владельцу и участникам со служебными ролями SEOR."
+    else:
+        print(f"Application command error: {error!r}",flush=True)
+        message="При выполнении команды произошла ошибка. Проверь логи Railway."
+    if interaction.response.is_done():
+        await interaction.followup.send(message,ephemeral=True)
+    else:
+        await interaction.response.send_message(message,ephemeral=True)
 
 if __name__ == "__main__":
     if not TOKEN: raise SystemExit("DISCORD_TOKEN не задан. Скопируй .env.example в .env")

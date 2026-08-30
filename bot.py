@@ -19,6 +19,7 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 BOT_NAME = os.getenv("BOT_NAME", "Arena Queue")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 STAFF_ONLY_COMMANDS = os.getenv("STAFF_ONLY_COMMANDS", "true").lower() in {"1", "true", "yes", "on"}
+LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 LEAGUES = {
     "Default": ("⚪", 1000),
     "Prospect": ("🟢", 1150),
@@ -62,11 +63,20 @@ def can_administer(member):
 
 
 async def staff_command_access(interaction):
+    if not await command_channel_access(interaction):
+        return False
     if not STAFF_ONLY_COMMANDS:
         return True
     if not interaction.guild:
         return False
     return interaction.user.id == interaction.guild.owner_id or any(has_role(interaction.user,name) for name in STAFF_ROLES.values())
+
+
+async def command_channel_access(interaction):
+    if not interaction.guild:
+        return False
+    command_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды")]
+    return not command_channels or bool(interaction.channel and interaction.channel.id in {c.id for c in command_channels})
 
 
 async def result_admin_access(interaction):
@@ -126,7 +136,7 @@ def queue_embed(channel):
     lines = "\n".join(f"`{i:02}` {m.mention}" for i, m in enumerate(members, 1)) or "Пока никого. Зайди в голосовой канал — бот добавит автоматически."
     e = discord.Embed(
         title=f"⚔️ {league.upper()} · {channel.name}",
-        description=f"{emoji} **Очередь открыта.** Зайдите в голосовой канал, чтобы участвовать.\n\n**Подтверждённые игроки:** `{len(members)}/10`\n**Голосовой канал:** {channel.mention}\n\n**В очереди**\n{lines}\n\n**До старта:** `{max(0, 10-len(members))}`",
+        description=f"{emoji} **Очередь открыта.** Зайдите в голосовой канал, чтобы участвовать.\n\n**Подтверждённые игроки:** `{len(members)}/{LOBBY_SIZE}`\n**Голосовой канал:** {channel.mention}\n\n**В очереди**\n{lines}\n\n**До старта:** `{max(0, LOBBY_SIZE-len(members))}`",
         color=color(),
     )
     e.set_footer(text="Матч до 13 победных раундов · очередь обновляется автоматически")
@@ -341,6 +351,16 @@ def dashboard_panel_embed(section):
     return e
 
 
+def dashboard_home_embed():
+    e=discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ",description="Твой центр управления матчами и профилем. Нажми кнопку ниже — панель откроется лично для тебя.",color=discord.Color.from_rgb(124,58,237))
+    e.add_field(name="👤 Игрок",value="Профиль • статистика • рейтинг",inline=True)
+    e.add_field(name="🎮 Матчи",value="История • поиск • результаты",inline=True)
+    e.add_field(name="👥 Команда",value="Пати • совместный подбор",inline=True)
+    e.add_field(name="🛡️ Персонал",value="Создание и выдача служебных ролей",inline=False)
+    e.set_footer(text="SEOR CYBER · FACEIT STANDOFF 2")
+    return e
+
+
 class DashboardSectionSelect(discord.ui.Select):
     def __init__(self,section):
         options=[discord.SelectOption(label=title,value=value,emoji=emoji,description=desc[:95],default=value==section) for value,(emoji,title,desc) in DASHBOARD_SECTIONS.items()]
@@ -377,6 +397,9 @@ class DashboardPanelView(discord.ui.View):
         else:
             self._button("Управление ролями","🛡️",discord.ButtonStyle.primary,self.role_panel)
             self._button("Создать роли","➕",discord.ButtonStyle.success,self.create_roles)
+        back=discord.ui.Button(label="Назад",emoji="↩️",style=discord.ButtonStyle.secondary,row=4)
+        back.callback=self.back
+        self.add_item(back)
 
     def _button(self,label,emoji,style,callback):
         b=discord.ui.Button(label=label,emoji=emoji,style=style,row=1); b.callback=callback; self.add_item(b)
@@ -412,6 +435,9 @@ class DashboardPanelView(discord.ui.View):
     async def account(self,i):
         p=db.player(i.guild_id,i.user.id)
         await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}**\nМатчей: **{p['games']}**",ephemeral=True)
+
+    async def back(self,i):
+        await i.response.edit_message(embed=dashboard_home_embed(),view=DashboardView())
 
     async def role_panel(self,i):
         if not can_manage_staff(i.user):
@@ -574,16 +600,21 @@ async def update_queue(channel):
         queue_messages[key]=msg.id
     else:
         await msg.edit(embed=queue_embed(channel),view=QueueView())
-    if len(live_members(channel)) >= 10 and key not in starting:
+    if len(live_members(channel)) >= LOBBY_SIZE and key not in starting:
         starting.add(key)
         try: await start_match(channel,text)
         finally: starting.discard(key)
 
 
 async def start_match(lobby,text):
-    members=live_members(lobby)[:10]
+    members=live_members(lobby)[:LOBBY_SIZE]
+    if not members: return
     random.shuffle(members)
-    a,b=members[:5],members[5:]
+    if len(members)==1:
+        a,b=members,[lobby.guild.me]
+    else:
+        split=len(members)//2
+        a,b=members[:split],members[split:]
     league=league_of(lobby) or "Default"
     host=random.choice(members)
     map_name=random.choice(MAPS)
@@ -596,9 +627,11 @@ async def start_match(lobby,text):
     va=await lobby.guild.create_voice_channel(f"🛡 CT · #{match_id}",category=lobby.category,overwrites=overwrites(a),user_limit=5)
     vb=await lobby.guild.create_voice_channel(f"💣 T · #{match_id}",category=lobby.category,overwrites=overwrites(b),user_limit=5)
     for m in a:
+        if m.bot: continue
         try: await m.move_to(va)
         except discord.HTTPException: pass
     for m in b:
+        if m.bot: continue
         try: await m.move_to(vb)
         except discord.HTTPException: pass
     e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\n*Ждём ссылку на лобби от хоста…*",color=color())
@@ -626,7 +659,7 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     print(f"{bot.user} ready")
-    await bot.change_presence(activity=discord.Game("очереди 5×5"))
+    await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
 
 
 @bot.event
@@ -685,6 +718,7 @@ async def on_voice_state_update(member,before,after):
 
 
 @bot.tree.command(name="setup",description="Создать структуру лиг и панели")
+@app_commands.check(command_channel_access)
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
@@ -759,12 +793,7 @@ async def setup(interaction:discord.Interaction):
         if old_message.author == g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    e = discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ", description="Твой центр управления матчами и профилем. Нажми кнопку ниже — панель откроется лично для тебя.", color=discord.Color.from_rgb(124,58,237))
-    e.add_field(name="👤 Игрок",value="Профиль • статистика • рейтинг",inline=True)
-    e.add_field(name="🎮 Матчи",value="История • поиск • результаты",inline=True)
-    e.add_field(name="👥 Команда",value="Пати • совместный подбор",inline=True)
-    e.add_field(name="🛡️ Персонал",value="Создание и выдача служебных ролей",inline=False)
-    e.set_footer(text="SEOR CYBER · FACEIT STANDOFF 2")
+    e = dashboard_home_embed()
     await dashboard.send(embed=e, view=DashboardView())
 
     community = await category("💬 SEOR COMMUNITY")
@@ -796,7 +825,9 @@ async def setup(interaction:discord.Interaction):
             ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
             lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
             if not lobby:
-                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=10)
+                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=LOBBY_SIZE)
+            if lobby.user_limit != LOBBY_SIZE:
+                await lobby.edit(user_limit=LOBBY_SIZE,reason="SEOR: синхронизация LOBBY_SIZE")
             if not ranked.last_message_id:
                 msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
     private=discord.utils.get(g.categories,name="🎧 SEOR PRIVATE") or await g.create_category("🎧 SEOR PRIVATE")
@@ -829,6 +860,7 @@ async def setup(interaction:discord.Interaction):
 
 
 @bot.tree.command(name="delete",description="Удалить созданную ботом структуру")
+@app_commands.check(command_channel_access)
 @app_commands.describe(confirm="Для подтверждения напиши УДАЛИТЬ")
 async def delete_setup(interaction:discord.Interaction,confirm:str):
     if not can_manage_staff(interaction.user):
@@ -852,6 +884,7 @@ async def delete_setup(interaction:discord.Interaction,confirm:str):
 
 
 @bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
+@app_commands.check(command_channel_access)
 async def roles_setup(interaction:discord.Interaction):
     if not can_manage_staff(interaction.user):
         return await interaction.response.send_message("Команда доступна только владельцу сервера или Owner.",ephemeral=True)
@@ -917,13 +950,19 @@ async def top(interaction:discord.Interaction):
 
 @setup.error
 async def setup_error(interaction,error):
-    if isinstance(error,app_commands.MissingPermissions): await interaction.response.send_message("Нужны права администратора.",ephemeral=True)
+    if isinstance(error,app_commands.MissingPermissions):
+        await interaction.response.send_message("Нужны права администратора.",ephemeral=True)
+    elif isinstance(error,app_commands.CheckFailure):
+        await interaction.response.send_message("Используй /setup только в канале #команды. Если канал ещё не создан, команда разрешена в любом канале.",ephemeral=True)
 
 
 @bot.tree.error
 async def command_error(interaction,error):
     if isinstance(error,app_commands.CheckFailure):
-        message="Команды временно доступны только владельцу и участникам со служебными ролями SEOR."
+        if not interaction.channel or not interaction.channel.name.endswith("команды"):
+            message="Эту команду можно использовать только в канале #команды."
+        else:
+            message="Команды временно доступны только владельцу и участникам со служебными ролями SEOR."
     else:
         print(f"Application command error: {error!r}",flush=True)
         message="При выполнении команды произошла ошибка. Проверь логи Railway."

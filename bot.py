@@ -18,7 +18,6 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 BOT_NAME = os.getenv("BOT_NAME", "Arena Queue")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
-STAFF_ONLY_COMMANDS = os.getenv("STAFF_ONLY_COMMANDS", "true").lower() in {"1", "true", "yes", "on"}
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
 LEAGUES = {
@@ -94,17 +93,6 @@ def curator_league(member):
 
 def can_use_role_panel(member):
     return can_manage_staff(member) or curator_league(member) is not None
-
-
-async def staff_command_access(interaction):
-    if not await command_channel_access(interaction):
-        return False
-    if not STAFF_ONLY_COMMANDS:
-        return True
-    if not interaction.guild:
-        return False
-    allowed_roles=tuple(STAFF_ROLES.values())+tuple(LEAGUE_ROLES.values())
-    return interaction.user.id == interaction.guild.owner_id or any(has_role(interaction.user,name) for name in allowed_roles)
 
 
 async def command_channel_access(interaction):
@@ -884,6 +872,7 @@ async def on_voice_state_update(member,before,after):
 
 
 @bot.tree.command(name="setup",description="Создать структуру лиг и панели")
+@app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction:discord.Interaction):
@@ -944,9 +933,10 @@ async def setup(interaction:discord.Interaction):
         await text(info, channel_name)
 
     start = await category("⌨️ SEOR COMMANDS")
+    await start.set_permissions(g.default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
     await sync_channels(start, text_names=("🤖・команды", "📊・дашборд", "🏆・топ-сервера"))
     commands_channel=await text(start, "🤖・команды")
-    await commands_channel.set_permissions(g.default_role,view_channel=False,send_messages=False)
+    await commands_channel.set_permissions(g.default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
     await commands_channel.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
     owner_member=g.get_member(g.owner_id)
     if owner_member:
@@ -960,7 +950,6 @@ async def setup(interaction:discord.Interaction):
     commands_embed=discord.Embed(title="⌨️ КОМАНДЫ SEOR",description="Используй slash-команды только в этом канале.",color=color())
     commands_embed.add_field(name="👤 Игрок",value="`/profile` — профиль\n`/set_game_id` — игровой ID\n`/standard` — норматив K/D\n`/qualification` — личная проверка норматива\n`/top` — топ игроков",inline=False)
     commands_embed.add_field(name="🎮 Матчи",value="`/result` — отправить результат\n`/match_info` — информация о матче",inline=False)
-    commands_embed.add_field(name="🛡️ Управление",value="`/setup` — обновить структуру\n`/roles_setup` — восстановить роли\n`/admin_result` — принять результат вручную\n`/delete` — удалить структуру",inline=False)
     commands_embed.set_footer(text="Стандарт квалификации: K/D 1.00 • Division и Pro освобождены")
     await commands_channel.send(embed=commands_embed)
     dashboard = await text(start, "📊・дашборд")
@@ -999,12 +988,12 @@ async def setup(interaction:discord.Interaction):
                 await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
             if name != "Default":
                 league_role=staff_roles[f"league_{name.lower()}"]
-                await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False)
-                await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True)
+                await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+                await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
                 await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
                 await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
             else:
-                await cat.set_permissions(g.default_role,view_channel=True,connect=True,send_messages=True,read_message_history=True)
+                await cat.set_permissions(g.default_role,view_channel=True,connect=True,send_messages=True,read_message_history=True,use_application_commands=True)
             await sync_channels(cat, text_names=("🎮・ranked",), voice_names=(f"🔊 Lobby {i}",), preserve_voice_prefixes=("🛡 CT · #", "💣 T · #"))
             ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
             lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
@@ -1012,9 +1001,17 @@ async def setup(interaction:discord.Interaction):
                 lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=LOBBY_SIZE)
             if lobby.user_limit != LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="SEOR: синхронизация LOBBY_SIZE")
-            for managed_channel in (ranked,lobby):
-                if managed_channel and not managed_channel.permissions_synced:
-                    await managed_channel.edit(sync_permissions=True,reason="SEOR: синхронизация доступа к лиге")
+            if name != "Default":
+                league_role=staff_roles[f"league_{name.lower()}"]
+                for managed_channel in (ranked,lobby):
+                    await managed_channel.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+                    await managed_channel.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+            else:
+                for managed_channel in (ranked,lobby):
+                    await managed_channel.set_permissions(g.default_role,view_channel=True,connect=True,send_messages=True,read_message_history=True,use_application_commands=True)
+            for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
+                try: await stale_room.delete(reason="SEOR /setup: удаление пустой комнаты матча")
+                except discord.HTTPException: pass
             if not ranked.last_message_id:
                 msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
     private=discord.utils.get(g.categories,name="🎧 SEOR PRIVATE") or await g.create_category("🎧 SEOR PRIVATE")
@@ -1047,6 +1044,7 @@ async def setup(interaction:discord.Interaction):
 
 
 @bot.tree.command(name="delete",description="Удалить созданную ботом структуру")
+@app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 @app_commands.describe(confirm="Для подтверждения напиши УДАЛИТЬ")
 async def delete_setup(interaction:discord.Interaction,confirm:str):
@@ -1071,6 +1069,7 @@ async def delete_setup(interaction:discord.Interaction,confirm:str):
 
 
 @bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
+@app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 async def roles_setup(interaction:discord.Interaction):
     if not can_manage_staff(interaction.user):
@@ -1081,22 +1080,23 @@ async def roles_setup(interaction:discord.Interaction):
 
 
 @bot.tree.command(name="profile",description="Показать игровой профиль")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def profile(interaction:discord.Interaction): await send_profile(interaction)
 
 
 @bot.tree.command(name="set_game_id",description="Сохранить игровой ID")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def set_game_id(interaction:discord.Interaction): await interaction.response.send_modal(GameIdModal())
 
 
 @bot.tree.command(name="result",description="Отправить результат матча")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def result(interaction:discord.Interaction): await interaction.response.send_modal(ResultSubmitModal())
 
 
 @bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")
-@app_commands.check(staff_command_access)
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.check(command_channel_access)
 @app_commands.check(result_admin_access)
 async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,score_b:int):
     if not ((score_a == 13 or score_b == 13) and score_a != score_b and min(score_a,score_b) >= 0):
@@ -1110,7 +1110,7 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
 
 
 @bot.tree.command(name="match_info",description="Показать информацию о матче")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def match_info(interaction:discord.Interaction,match_id:int):
     m=db.match(match_id)
     if not m: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
@@ -1132,19 +1132,19 @@ def standard_embed(guild_id,user):
 
 
 @bot.tree.command(name="standard",description="Показать стандарт квалификации K/D")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def standard(interaction:discord.Interaction):
     await interaction.response.send_message(embed=standard_embed(interaction.guild_id,interaction.user),ephemeral=True)
 
 
 @bot.tree.command(name="qualification",description="Проверить норматив K/D")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def qualification(interaction:discord.Interaction):
     await interaction.response.send_message(embed=standard_embed(interaction.guild_id,interaction.user),ephemeral=True)
 
 
 @bot.tree.command(name="top",description="Показать топ-10 игроков")
-@app_commands.check(staff_command_access)
+@app_commands.check(command_channel_access)
 async def top(interaction:discord.Interaction):
     rows=db.leaders(interaction.guild_id)
     img=Image.new("RGB",(900,120+70*max(1,len(rows))),(10,14,22)); d=ImageDraw.Draw(img)

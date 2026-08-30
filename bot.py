@@ -223,19 +223,126 @@ class ResultSubmitModal(discord.ui.Modal, title="Отправка результ
         await interaction.followup.send(f"Результат №{submission_id} отправлен администрации.", ephemeral=True)
 
 
+class GameLookupModal(discord.ui.Modal, title="Поиск профил��"):
+    game_id = discord.ui.TextInput(label="Игровой ID", placeholder="Например: 132699411", max_length=30)
+
+    async def on_submit(self, interaction):
+        p=db.player_by_game_id(interaction.guild_id,str(self.game_id).strip())
+        if not p:
+            return await interaction.response.send_message("Игрок с таким ID не найден.",ephemeral=True)
+        member=interaction.guild.get_member(p["user_id"])
+        name=member.display_name if member else f"Игрок {p['user_id']}"
+        kd=p["kills"]/max(1,p["deaths"])
+        e=discord.Embed(title=f"🔎 {name}",description=f"ID: `{p['game_id']}`\nELO: **{p['points']}**\nМатчи: **{p['games']}**\nПобеды: **{p['wins']}**\nK/D: **{kd:.2f}**",color=color())
+        await interaction.response.send_message(embed=e,ephemeral=True)
+
+
+class MatchLookupDashboardModal(discord.ui.Modal, title="Поиск матча"):
+    match_id = discord.ui.TextInput(label="ID матча", placeholder="Например: 700", max_length=10)
+
+    async def on_submit(self, interaction):
+        try: m=db.match(int(str(self.match_id)))
+        except ValueError: m=None
+        if not m:
+            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+        a=" ".join(f"<@{x}>" for x in m["team_a"].split(",") if x)
+        b=" ".join(f"<@{x}>" for x in m["team_b"].split(",") if x)
+        score=f"{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}"
+        e=discord.Embed(title=f"🎮 Матч #{m['id']}",description=f"Лига: **{m['league']}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{score}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
+        await interaction.response.send_message(embed=e,ephemeral=True)
+
+
+DASHBOARD_SECTIONS={
+    "stats":("📊","Статистика","Профиль, K/D, игровая форма и поиск игрока."),
+    "rating":("🏆","Рейтинг","Таблица лидеров, твой ELO и место на сервере."),
+    "matches":("🎮","Матчи","Последние игры, текущий статус и поиск по ID."),
+    "party":("👥","Пати","Группа до трёх игроков для совместного подбора."),
+    "account":("⚙️","Аккаунт","Игровой ID и данные регистрации."),
+}
+
+
+def dashboard_panel_embed(section):
+    emoji,title,description=DASHBOARD_SECTIONS[section]
+    return discord.Embed(title=f"{emoji} {title}",description=f"Выбери раздел в списке — доступные кнопки изменятся.\n\n**{title}** — {description}\n\n*Эта панель видна только тебе.*",color=color()).set_footer(text="SEOR CYBER · control center")
+
+
+class DashboardSectionSelect(discord.ui.Select):
+    def __init__(self,section):
+        options=[discord.SelectOption(label=title,value=value,emoji=emoji,description=desc[:95],default=value==section) for value,(emoji,title,desc) in DASHBOARD_SECTIONS.items()]
+        super().__init__(placeholder="Выбери раздел панели",options=options,row=0)
+
+    async def callback(self,interaction):
+        section=self.values[0]
+        await interaction.response.edit_message(embed=dashboard_panel_embed(section),view=DashboardPanelView(section))
+
+
+class DashboardPanelView(discord.ui.View):
+    def __init__(self,section="stats"):
+        super().__init__(timeout=300)
+        self.add_item(DashboardSectionSelect(section))
+        if section=="stats":
+            self._button("Мой профиль","👤",discord.ButtonStyle.primary,self.profile)
+            self._button("Найти по ID","🔎",discord.ButtonStyle.secondary,self.lookup_player)
+            self._button("Моя форма","📈",discord.ButtonStyle.secondary,self.form)
+        elif section=="rating":
+            self._button("Топ сервера","🏆",discord.ButtonStyle.primary,self.top)
+            self._button("Моё место","📍",discord.ButtonStyle.secondary,self.place)
+            self._button("Норматив лиги","📗",discord.ButtonStyle.secondary,self.norms)
+        elif section=="matches":
+            self._button("Последние матчи","🕹️",discord.ButtonStyle.primary,self.matches)
+            self._button("Найти матч","🔎",discord.ButtonStyle.secondary,self.lookup_match)
+            self._button("Отправить результат","📤",discord.ButtonStyle.success,self.result)
+        elif section=="party":
+            self._button("Создать пати","➕",discord.ButtonStyle.success,self.party_create)
+            self._button("Моё пати","👥",discord.ButtonStyle.primary,self.party_show)
+            self._button("Покинуть","🚪",discord.ButtonStyle.danger,self.party_leave)
+        else:
+            self._button("Изменить игровой ID","🪪",discord.ButtonStyle.primary,self.change_id)
+            self._button("Данные аккаунта","📋",discord.ButtonStyle.secondary,self.account)
+
+    def _button(self,label,emoji,style,callback):
+        b=discord.ui.Button(label=label,emoji=emoji,style=style,row=1); b.callback=callback; self.add_item(b)
+
+    async def profile(self,i): await send_profile(i)
+    async def lookup_player(self,i): await i.response.send_modal(GameLookupModal())
+    async def lookup_match(self,i): await i.response.send_modal(MatchLookupDashboardModal())
+    async def change_id(self,i): await i.response.send_modal(GameIdModal())
+    async def result(self,i): await i.response.send_modal(ResultSubmitModal())
+
+    async def form(self,i):
+        p=db.player(i.guild_id,i.user.id); wr=100*p["wins"]/max(1,p["games"]); kd=p["kills"]/max(1,p["deaths"])
+        await i.response.send_message(f"📈 Текущая форма: **{p['wins']}W / {p['losses']}L**, WR **{wr:.0f}%**, K/D **{kd:.2f}**.",ephemeral=True)
+
+    async def top(self,i):
+        rows=db.leaders(i.guild_id,10); text="\n".join(f"**#{n}** <@{p['user_id']}> — `{p['points']} ELO`" for n,p in enumerate(rows,1)) or "Рейтинг пока пуст."
+        await i.response.send_message(embed=discord.Embed(title="🏆 Топ SEOR",description=text,color=color()),ephemeral=True)
+
+    async def place(self,i):
+        rows=db.leaders(i.guild_id,1000); pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.player(i.guild_id,i.user.id)
+        await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**.",ephemeral=True)
+
+    async def norms(self,i):
+        await i.response.send_message("📗 Default: 1000 · Prospect: 1150 · Division: 1350 · Pro: 1600 ELO",ephemeral=True)
+
+    async def matches(self,i):
+        rows=db.recent_matches(i.guild_id,10); text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
+        await i.response.send_message(embed=discord.Embed(title="🕹️ Последние матчи",description=text,color=color()),ephemeral=True)
+
+    async def party_create(self,i): await i.response.send_message("👥 Тестовое пати создано. Приглашение игроков будет добавлено в следующем модуле.",ephemeral=True)
+    async def party_show(self,i): await i.response.send_message("👥 Сейчас ты не состоишь в активном пати.",ephemeral=True)
+    async def party_leave(self,i): await i.response.send_message("🚪 Ты покинул активное пати.",ephemeral=True)
+    async def account(self,i):
+        p=db.player(i.guild_id,i.user.id)
+        await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}**\nМатчей: **{p['games']}**",ephemeral=True)
+
+
 class DashboardView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Мой профиль", emoji="👤", style=discord.ButtonStyle.primary, custom_id="dashboard:profile")
-    async def profile_button(self, interaction, button):
-        await send_profile(interaction)
-
-    @discord.ui.button(label="Последние матчи", emoji="🎮", style=discord.ButtonStyle.secondary, custom_id="dashboard:matches")
-    async def matches_button(self, interaction, button):
-        rows = db.recent_matches(interaction.guild_id, 10)
-        text = "\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'} · {m['status']}" for m in rows) or "Матчей пока нет."
-        await interaction.response.send_message(embed=discord.Embed(title="🎮 Последние матчи", description=text, color=color()), ephemeral=True)
+    @discord.ui.button(label="Открыть панель",emoji="🎛️",style=discord.ButtonStyle.success,custom_id="dashboard:open")
+    async def open_panel(self,interaction,button):
+        await interaction.response.send_message(embed=dashboard_panel_embed("stats"),view=DashboardPanelView("stats"),ephemeral=True)
 
 
 class TicketView(discord.ui.View):
@@ -487,13 +594,17 @@ async def setup(interaction:discord.Interaction):
         await text(info, channel_name)
 
     start = await category("⌨️ SEOR COMMANDS")
-    await sync_channels(start, text_names=("🤖・команды", "📊・панель", "🏆・лидеры"))
+    await sync_channels(start, text_names=("🤖・команды", "📊・дашборд", "🏆・топ-сервера"))
     await text(start, "🤖・команды")
-    dashboard = await text(start, "📊・панель")
-    await text(start, "🏆・лидеры")
-    if not dashboard.last_message_id:
-        e = discord.Embed(title="🎛 ПАНЕЛЬ УПРАВЛЕНИЯ", description="Всё управление проектом — в одном окне.\n\n📊 Профиль и статистика\n🏆 Рейтинг и место в таблице\n🎮 Последние матчи\n👥 Пати и совместная игра\n⚙️ Игровой аккаунт", color=color())
-        await dashboard.send(embed=e, view=DashboardView())
+    dashboard = await text(start, "📊・дашборд")
+    await text(start, "🏆・топ-сервера")
+    async for old_message in dashboard.history(limit=20):
+        if old_message.author == g.me:
+            try: await old_message.delete()
+            except discord.HTTPException: pass
+    e = discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ", description="Управляй игровым профилем и матчами из одного окна.\n\n📊 **Статистика** — профиль, K/D и форма\n🏆 **Рейтинг** — топ сервера и твоё место\n🎮 **Матчи** — история и поиск по ID\n👥 **Пати** — совместный подбор\n⚙️ **Аккаунт** — игровой ID и данные\n\n*Нажми кнопку — личная панель откроется только для тебя.*", color=color())
+    e.set_footer(text="SEOR CYBER · FACEIT STANDOFF 2")
+    await dashboard.send(embed=e, view=DashboardView())
 
     community = await category("💬 SEOR COMMUNITY")
     community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro", "🟣・чат-division", "🟡・чат-qualifications", "🛠️・чат-кураторов")
@@ -572,9 +683,9 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
         return await interaction.response.send_message("Некорректный счёт: одна команда должна иметь 13.",ephemeral=True)
     if not db.finish_match(match_id,score_a,score_b):
         return await interaction.response.send_message("Матч уже завершён или не найден.",ephemeral=True)
-    history=discord.utils.get(interaction.guild.text_channels,name="история-игр")
+    history=next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")),None)
     if history:
-        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зареги��трирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
+        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
     await interaction.response.send_message(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
 
 

@@ -55,6 +55,11 @@ def player(guild_id:int,user_id:int):
     with connect() as con:
         return dict(con.execute("SELECT * FROM players WHERE guild_id=? AND user_id=?",(guild_id,user_id)).fetchone())
 
+def player_by_game_id(guild_id:int,game_id:str):
+    with connect() as con:
+        row=con.execute("SELECT * FROM players WHERE guild_id=? AND game_id=?",(guild_id,game_id)).fetchone()
+        return dict(row) if row else None
+
 def leaders(guild_id:int, limit:int=10):
     with connect() as con:
         return [dict(x) for x in con.execute("SELECT * FROM players WHERE guild_id=? ORDER BY points DESC,wins DESC LIMIT ?",(guild_id,limit))]

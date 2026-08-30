@@ -331,11 +331,16 @@ class GameLookupModal(discord.ui.Modal, title="Поиск профил��"):
         p=db.player_by_game_id(interaction.guild_id,str(self.game_id).strip())
         if not p:
             return await interaction.response.send_message("Игрок с таким ID не найден.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         member=interaction.guild.get_member(p["user_id"])
         name=member.display_name if member else f"Игрок {p['user_id']}"
-        kd=p["kills"]/max(1,p["deaths"])
-        e=discord.Embed(title=f"🔎 {name}",description=f"ID: `{p['game_id']}`\nELO: **{p['points']}**\nМатчи: **{p['games']}**\nПобеды: **{p['wins']}**\nK/D: **{kd:.2f}**",color=color())
-        await interaction.response.send_message(embed=e,ephemeral=True)
+        recent=[]
+        for match in db.recent_matches(interaction.guild_id,50):
+            ids=set((match["team_a"]+","+match["team_b"]).split(","))
+            if str(p["user_id"]) in ids: recent.append(match)
+        avatar_url=str(member.display_avatar.with_size(256).url) if member else ""
+        card=await build_profile_card(p,name,avatar_url,recent)
+        await interaction.followup.send(file=discord.File(card,"profile.png"),ephemeral=True)
 
 
 class MatchLookupDashboardModal(discord.ui.Modal, title="Поиск матча"):
@@ -606,19 +611,22 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
         await interaction.response.send_message(embed=e)
 
 
-async def send_profile(interaction):
+async def send_profile(interaction,member=None):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    p = db.player(interaction.guild_id, interaction.user.id)
+    member=member or interaction.user
+    p = db.player(interaction.guild_id, member.id)
     recent=[]
     for m in db.recent_matches(interaction.guild_id,50):
         ids=set((m["team_a"]+","+m["team_b"]).split(","))
-        if str(interaction.user.id) in ids: recent.append(m)
-    avatar_url=interaction.user.display_avatar.with_size(256).url
-    card=await build_profile_card(p,interaction.user.display_name,str(avatar_url),recent)
-    view=discord.ui.View(timeout=60)
-    button=discord.ui.Button(label="Изменить игровой ID",style=discord.ButtonStyle.primary)
-    async def cb(i): await i.response.send_modal(GameIdModal())
-    button.callback=cb; view.add_item(button)
+        if str(member.id) in ids: recent.append(m)
+    avatar_url=member.display_avatar.with_size(256).url
+    card=await build_profile_card(p,member.display_name,str(avatar_url),recent)
+    view=None
+    if member.id==interaction.user.id:
+        view=discord.ui.View(timeout=60)
+        button=discord.ui.Button(label="Изменить игровой ID",style=discord.ButtonStyle.primary)
+        async def cb(i): await i.response.send_modal(GameIdModal())
+        button.callback=cb; view.add_item(button)
     await interaction.followup.send(file=discord.File(card,"profile.png"),view=view,ephemeral=True)
 
 
@@ -964,8 +972,25 @@ async def setup(interaction:discord.Interaction):
     community = await category("💬 SEOR COMMUNITY")
     community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro", "🟣・чат-division", "🟡・чат-qualifications", "🛠️・чат-кураторов")
     await sync_channels(community, text_names=community_names, voice_names=("🌐 Общий голос",))
-    for channel_name in community_names:
-        await text(community, channel_name)
+    community_channels={channel_name:await text(community,channel_name) for channel_name in community_names}
+    protected_chats={
+        "🔴・чат-pro":("league_pro","curator_pro"),
+        "🟣・чат-division":("league_division","curator_division"),
+        "🟡・чат-qualifications":("league_prospect","curator_prospect"),
+    }
+    for channel_name,(league_key,curator_key) in protected_chats.items():
+        channel=community_channels[channel_name]
+        await channel.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
+        await channel.set_permissions(staff_roles[league_key],view_channel=True,send_messages=True,read_message_history=True)
+        await channel.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
+        await channel.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
+        await channel.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
+    curator_chat=community_channels["🛠️・чат-кураторов"]
+    await curator_chat.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
+    for curator_key in ("curator_default","curator_prospect","curator_division","curator_pro"):
+        await curator_chat.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,read_message_history=True)
+    await curator_chat.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
+    await curator_chat.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
     if not discord.utils.get(community.voice_channels, name="🌐 Общий голос"):
         await g.create_voice_channel("🌐 Общий голос", category=community, user_limit=99)
 
@@ -1081,7 +1106,8 @@ async def roles_setup(interaction:discord.Interaction):
 
 @bot.tree.command(name="profile",description="Показать игровой профиль")
 @app_commands.check(command_channel_access)
-async def profile(interaction:discord.Interaction): await send_profile(interaction)
+@app_commands.describe(member="Игрок, профиль которого нужно открыть")
+async def profile(interaction:discord.Interaction,member:discord.Member=None): await send_profile(interaction,member)
 
 
 @bot.tree.command(name="set_game_id",description="Сохранить игровой ID")

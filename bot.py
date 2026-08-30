@@ -20,13 +20,16 @@ BOT_NAME = os.getenv("BOT_NAME", "Arena Queue")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 STAFF_ONLY_COMMANDS = os.getenv("STAFF_ONLY_COMMANDS", "true").lower() in {"1", "true", "yes", "on"}
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
+QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
 LEAGUES = {
     "Default": ("⚪", 1000),
     "Prospect": ("🟢", 1150),
     "Division": ("🟣", 1350),
     "Pro": ("🔴", 1600),
 }
-MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami"]
+MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami", "Breeze", "Prison"]
+MAP_ICONS = {"Sandstone":"🏜️","Province":"🏘️","Rust":"🏭","Dune":"🌵","Hanami":"🌸","Breeze":"🌊","Prison":"⛓️"}
+MAP_VETO_TIMEOUT = 15
 STAFF_ROLES = {
     "owner": "👑 Owner",
     "admin": "🛡️ Admin",
@@ -43,6 +46,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 queue_messages = {}
 starting = set()
+active_veto = set()
 room_owners = {}
 
 
@@ -52,6 +56,20 @@ def color():
 
 def has_role(member, role_name):
     return any(role.name == role_name for role in member.roles)
+
+
+def player_league(points):
+    if points >= 1600: return "Pro"
+    if points >= 1350: return "Division"
+    if points >= 1150: return "Prospect"
+    return "Default"
+
+
+def qualification_status(player_data):
+    league=player_league(player_data["points"])
+    kd=player_data["kills"]/max(1,player_data["deaths"])
+    exempt=league in {"Pro","Division"}
+    return league,kd,exempt or kd >= QUALIFICATION_KD,exempt
 
 
 def can_manage_staff(member):
@@ -423,7 +441,7 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**.",ephemeral=True)
 
     async def norms(self,i):
-        await i.response.send_message("📗 Default: 1000 · Prospect: 1150 · Division: 1350 · Pro: 1600 ELO",ephemeral=True)
+        await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\nЛиги по ELO: Default 1000 · Prospect 1150 · Division 1350 · Pro 1600.",ephemeral=True)
 
     async def matches(self,i):
         rows=db.recent_matches(i.guild_id,10); text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
@@ -600,10 +618,99 @@ async def update_queue(channel):
         queue_messages[key]=msg.id
     else:
         await msg.edit(embed=queue_embed(channel),view=QueueView())
-    if len(live_members(channel)) >= LOBBY_SIZE and key not in starting:
+    if len(live_members(channel)) >= LOBBY_SIZE and key not in starting and key not in active_veto:
         starting.add(key)
         try: await start_match(channel,text)
         finally: starting.discard(key)
+
+
+class MapVetoView(discord.ui.View):
+    def __init__(self,lobby,text,members,team_a,team_b,league,host):
+        super().__init__(timeout=None)
+        self.lobby=lobby; self.text=text; self.members=members
+        self.team_a=team_a; self.team_b=team_b; self.league=league; self.host=host
+        captain_a=next((m for m in team_a if not m.bot),host)
+        captain_b=next((m for m in team_b if not m.bot),captain_a)
+        self.captains=[captain_a,captain_b]
+        self.remaining=list(MAPS); self.history=[]; self.turn=0
+        self.message=None; self.timer_task=None; self.finished=False
+        self.lock=asyncio.Lock()
+        self.rebuild()
+
+    @property
+    def captain(self): return self.captains[self.turn % 2]
+
+    def embed(self,selected=None):
+        if selected:
+            e=discord.Embed(title=f"✅ Карта выбрана: {MAP_ICONS[selected]} {selected}",description="Распик завершён. Бот создаёт комнаты команд.",color=discord.Color.green())
+        else:
+            available="  ".join(f"{MAP_ICONS[m]} **{m}**" for m in self.remaining)
+            log="\n".join(self.history[-6:]) or "Банов пока нет."
+            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас ходит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
+            e.add_field(name="🛡 Капитан CT",value=self.captains[0].mention,inline=True)
+            e.add_field(name="💣 Капитан T",value=self.captains[1].mention,inline=True)
+            e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=True)
+            e.add_field(name="История банов",value=log,inline=False)
+        e.set_footer(text=f"SEOR MAP VETO • {self.league} • осталось карт: {len(self.remaining)}")
+        return e
+
+    def rebuild(self):
+        self.clear_items()
+        for index,map_name in enumerate(MAPS):
+            banned=map_name not in self.remaining
+            button=discord.ui.Button(label=map_name,emoji=MAP_ICONS[map_name],style=discord.ButtonStyle.secondary if banned else discord.ButtonStyle.primary,disabled=banned,row=index//5)
+            async def callback(interaction,map_choice=map_name):
+                await self.manual_ban(interaction,map_choice)
+            button.callback=callback
+            self.add_item(button)
+
+    async def start(self):
+        mentions=" ".join(m.mention for m in self.members)
+        self.message=await self.text.send(content=mentions,embed=self.embed(),view=self)
+        self.schedule_timer()
+
+    def schedule_timer(self):
+        current=asyncio.current_task()
+        if self.timer_task and not self.timer_task.done() and self.timer_task is not current:
+            self.timer_task.cancel()
+        self.timer_task=asyncio.create_task(self.auto_ban())
+
+    async def manual_ban(self,interaction,map_name):
+        if interaction.user.id != self.captain.id and not can_administer(interaction.user):
+            return await interaction.response.send_message(f"Сейчас ход капитана {self.captain.mention}.",ephemeral=True)
+        await interaction.response.defer()
+        async with self.lock:
+            if self.finished or map_name not in self.remaining: return
+            self.remaining.remove(map_name)
+            self.history.append(f"🚫 {interaction.user.mention} забанил {MAP_ICONS[map_name]} **{map_name}**")
+            await self.advance()
+
+    async def auto_ban(self):
+        try: await asyncio.sleep(MAP_VETO_TIMEOUT)
+        except asyncio.CancelledError: return
+        async with self.lock:
+            if self.finished or len(self.remaining)<=1: return
+            map_name=random.choice(self.remaining)
+            captain=self.captain
+            self.remaining.remove(map_name)
+            self.history.append(f"⏱️ AUTO-BAN: {captain.mention} не ответил — исключена {MAP_ICONS[map_name]} **{map_name}**")
+            await self.advance()
+
+    async def advance(self):
+        if len(self.remaining)==1:
+            self.finished=True
+            selected=self.remaining[0]
+            if self.timer_task and not self.timer_task.done() and self.timer_task is not asyncio.current_task():
+                self.timer_task.cancel()
+            self.clear_items()
+            await self.message.edit(embed=self.embed(selected),view=self)
+            active_veto.discard(self.lobby.id)
+            await finalize_match(self.lobby,self.text,self.members,self.team_a,self.team_b,self.league,self.host,selected)
+            return
+        self.turn+=1
+        self.rebuild()
+        await self.message.edit(embed=self.embed(),view=self)
+        self.schedule_timer()
 
 
 async def start_match(lobby,text):
@@ -617,7 +724,15 @@ async def start_match(lobby,text):
         a,b=members[:split],members[split:]
     league=league_of(lobby) or "Default"
     host=random.choice(members)
-    map_name=random.choice(MAPS)
+    active_veto.add(lobby.id)
+    veto=MapVetoView(lobby,text,members,a,b,league,host)
+    try: await veto.start()
+    except Exception:
+        active_veto.discard(lobby.id)
+        raise
+
+
+async def finalize_match(lobby,text,members,a,b,league,host,map_name):
     match_id=db.create_match(lobby.guild.id,league,map_name,host.id,[x.id for x in a],[x.id for x in b])
     everyone=lobby.guild.default_role
     def overwrites(team):
@@ -736,7 +851,7 @@ async def setup(interaction:discord.Interaction):
         "📮 SEOR RESULTS": 1,
         "🛡️ SEOR STAFF": 1,
     }
-    league_managed = {f"{emoji} SEOR {name.upper()}": 5 for name, (emoji, _) in LEAGUES.items()}
+    league_managed = {f"{emoji} SEOR {name.upper()}": 3 for name, (emoji, _) in LEAGUES.items()}
     for cat_name, keep_count in {**unique_managed, **league_managed}.items():
         same = [c for c in g.categories if c.name == cat_name]
         for extra in same[keep_count:]:
@@ -815,9 +930,9 @@ async def setup(interaction:discord.Interaction):
     for name,(emoji,_) in LEAGUES.items():
         cat_name=f"{emoji} SEOR {name.upper()}"
         cats=[c for c in g.categories if c.name == cat_name]
-        while len(cats) < 5:
+        while len(cats) < 3:
             cats.append(await g.create_category(cat_name))
-        for i,cat in enumerate(cats[:5],1):
+        for i,cat in enumerate(cats[:3],1):
             curator=staff_roles.get(f"curator_{name.lower()}")
             if curator:
                 await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
@@ -929,6 +1044,21 @@ async def match_info(interaction:discord.Interaction,match_id:int):
     if not m: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
     a=" ".join(f"<@{x}>" for x in m["team_a"].split(",")); b=" ".join(f"<@{x}>" for x in m["team_b"].split(","))
     e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{m['league']}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
+    await interaction.response.send_message(embed=e,ephemeral=True)
+
+
+@bot.tree.command(name="qualification",description="Проверить норматив K/D")
+@app_commands.check(staff_command_access)
+async def qualification(interaction:discord.Interaction):
+    p=db.player(interaction.guild_id,interaction.user.id)
+    league,kd,passed,exempt=qualification_status(p)
+    if exempt:
+        result="✅ Норматив выполнять не нужно: действует освобождение для Division/Pro."
+    elif passed:
+        result=f"✅ Норматив выполнен: K/D {kd:.2f} ≥ {QUALIFICATION_KD:.2f}."
+    else:
+        result=f"❌ Норматив не выполнен: K/D {kd:.2f} < {QUALIFICATION_KD:.2f}."
+    e=discord.Embed(title="📗 Проверка квалификации",description=f"Лига: **{league}**\nТекущий K/D: **{kd:.2f}**\nСтандарт: **{QUALIFICATION_KD:.2f} K/D**\n\n{result}",color=discord.Color.green() if passed else discord.Color.red())
     await interaction.response.send_message(embed=e,ephemeral=True)
 
 

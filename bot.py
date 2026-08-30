@@ -48,6 +48,7 @@ queue_messages = {}
 starting = set()
 active_veto = set()
 room_owners = {}
+match_room_cleanup = {}
 
 
 def color():
@@ -632,7 +633,7 @@ class MapVetoView(discord.ui.View):
         captain_a=next((m for m in team_a if not m.bot),host)
         captain_b=next((m for m in team_b if not m.bot),captain_a)
         self.captains=[captain_a,captain_b]
-        self.remaining=list(MAPS); self.history=[]; self.turn=0
+        self.remaining=list(MAPS); self.banned=[]; self.history=[]; self.turn=0
         self.message=None; self.timer_task=None; self.finished=False
         self.lock=asyncio.Lock()
         self.rebuild()
@@ -682,6 +683,7 @@ class MapVetoView(discord.ui.View):
         async with self.lock:
             if self.finished or map_name not in self.remaining: return
             self.remaining.remove(map_name)
+            self.banned.append(map_name)
             self.history.append(f"🚫 {interaction.user.mention} забанил {MAP_ICONS[map_name]} **{map_name}**")
             await self.advance()
 
@@ -693,6 +695,7 @@ class MapVetoView(discord.ui.View):
             map_name=random.choice(self.remaining)
             captain=self.captain
             self.remaining.remove(map_name)
+            self.banned.append(map_name)
             self.history.append(f"⏱️ AUTO-BAN: {captain.mention} не ответил — исключена {MAP_ICONS[map_name]} **{map_name}**")
             await self.advance()
 
@@ -737,6 +740,10 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
     everyone=lobby.guild.default_role
     def overwrites(team):
         o={everyone:discord.PermissionOverwrite(view_channel=False,connect=False),lobby.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,move_members=True)}
+        staff_names=(STAFF_ROLES["owner"],STAFF_ROLES["admin"],STAFF_ROLES.get(f"curator_{league.lower()}"))
+        for role_name in staff_names:
+            role=discord.utils.get(lobby.guild.roles,name=role_name) if role_name else None
+            if role: o[role]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True,move_members=True,mute_members=True)
         for m in team:o[m]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True)
         return o
     va=await lobby.guild.create_voice_channel(f"🛡 CT · #{match_id}",category=lobby.category,overwrites=overwrites(a),user_limit=5)
@@ -812,6 +819,19 @@ async def on_interaction(interaction):
         await interaction.response.edit_message(embed=embed, view=None)
 
 
+async def delete_empty_match_room(channel):
+    task=asyncio.current_task()
+    try:
+        await asyncio.sleep(180)
+        if not channel.members:
+            await channel.delete(reason="Комната матча пуста 3 минуты")
+    except (asyncio.CancelledError,discord.HTTPException):
+        pass
+    finally:
+        if match_room_cleanup.get(channel.id) is task:
+            match_room_cleanup.pop(channel.id,None)
+
+
 @bot.event
 async def on_voice_state_update(member,before,after):
     if member.bot: return
@@ -825,11 +845,13 @@ async def on_voice_state_update(member,before,after):
     if before.channel and before.channel.id in room_owners and not before.channel.members:
         room_owners.pop(before.channel.id,None)
         await before.channel.delete(reason="Приватная комната опустела")
+    if after.channel and after.channel.name.startswith(("🛡 CT · #","💣 T · #")):
+        old_task=match_room_cleanup.pop(after.channel.id,None)
+        if old_task: old_task.cancel()
     if before.channel and before.channel.name.startswith(("🛡 CT · #","💣 T · #")) and not before.channel.members:
-        await asyncio.sleep(30)
-        if before.channel and not before.channel.members:
-            try: await before.channel.delete(reason="Комната завершённого матча пуста")
-            except discord.NotFound: pass
+        old_task=match_room_cleanup.pop(before.channel.id,None)
+        if old_task: old_task.cancel()
+        match_room_cleanup[before.channel.id]=asyncio.create_task(delete_empty_match_room(before.channel))
 
 
 @bot.tree.command(name="setup",description="Создать структуру лиг и панели")
@@ -902,6 +924,16 @@ async def setup(interaction:discord.Interaction):
         await commands_channel.set_permissions(owner_member,view_channel=True,send_messages=True)
     for role in staff_roles.values():
         await commands_channel.set_permissions(role,view_channel=True,send_messages=True,read_message_history=True)
+    async for old_message in commands_channel.history(limit=20):
+        if old_message.author == g.me:
+            try: await old_message.delete()
+            except discord.HTTPException: pass
+    commands_embed=discord.Embed(title="⌨️ КОМАНДЫ SEOR",description="Используй slash-команды только в этом канале.",color=color())
+    commands_embed.add_field(name="👤 Игрок",value="`/profile` — профиль\n`/set_game_id` — игровой ID\n`/standard` — норматив K/D\n`/qualification` — личная проверка норматива\n`/top` — топ игроков",inline=False)
+    commands_embed.add_field(name="🎮 Матчи",value="`/result` — отправить результат\n`/match_info` — информация о матче",inline=False)
+    commands_embed.add_field(name="🛡️ Управление",value="`/setup` — обновить структуру\n`/roles_setup` — восстановить роли\n`/admin_result` — принять результат вручную\n`/delete` — удалить структуру",inline=False)
+    commands_embed.set_footer(text="Стандарт квалификации: K/D 1.00 • Division и Pro освобождены")
+    await commands_channel.send(embed=commands_embed)
     dashboard = await text(start, "📊・дашборд")
     await text(start, "🏆・топ-сервера")
     async for old_message in dashboard.history(limit=20):
@@ -1047,10 +1079,8 @@ async def match_info(interaction:discord.Interaction,match_id:int):
     await interaction.response.send_message(embed=e,ephemeral=True)
 
 
-@bot.tree.command(name="qualification",description="Проверить норматив K/D")
-@app_commands.check(staff_command_access)
-async def qualification(interaction:discord.Interaction):
-    p=db.player(interaction.guild_id,interaction.user.id)
+def standard_embed(guild_id,user):
+    p=db.player(guild_id,user.id)
     league,kd,passed,exempt=qualification_status(p)
     if exempt:
         result="✅ Норматив выполнять не нужно: действует освобождение для Division/Pro."
@@ -1058,8 +1088,19 @@ async def qualification(interaction:discord.Interaction):
         result=f"✅ Норматив выполнен: K/D {kd:.2f} ≥ {QUALIFICATION_KD:.2f}."
     else:
         result=f"❌ Норматив не выполнен: K/D {kd:.2f} < {QUALIFICATION_KD:.2f}."
-    e=discord.Embed(title="📗 Проверка квалификации",description=f"Лига: **{league}**\nТекущий K/D: **{kd:.2f}**\nСтандарт: **{QUALIFICATION_KD:.2f} K/D**\n\n{result}",color=discord.Color.green() if passed else discord.Color.red())
-    await interaction.response.send_message(embed=e,ephemeral=True)
+    return discord.Embed(title="📗 Стандарт квалификации",description=f"Лига: **{league}**\nТекущий K/D: **{kd:.2f}**\nСтандарт: **{QUALIFICATION_KD:.2f} K/D**\nОсвобождение: **Division и Pro**\n\n{result}",color=discord.Color.green() if passed else discord.Color.red())
+
+
+@bot.tree.command(name="standard",description="Показать стандарт квалификации K/D")
+@app_commands.check(staff_command_access)
+async def standard(interaction:discord.Interaction):
+    await interaction.response.send_message(embed=standard_embed(interaction.guild_id,interaction.user),ephemeral=True)
+
+
+@bot.tree.command(name="qualification",description="Проверить норматив K/D")
+@app_commands.check(staff_command_access)
+async def qualification(interaction:discord.Interaction):
+    await interaction.response.send_message(embed=standard_embed(interaction.guild_id,interaction.user),ephemeral=True)
 
 
 @bot.tree.command(name="top",description="Показать топ-10 игроков")

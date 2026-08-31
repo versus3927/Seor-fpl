@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import db
 from profile_card import build_profile_card
+from leaderboard_card import build_leaderboard
 from screenshot_reader import analyze_screenshot
 
 load_dotenv()
@@ -674,8 +675,7 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message(f"📈 Текущая форма: **{p['wins']}W / {p['losses']}L**, WR **{wr:.0f}%**, K/D **{kd:.2f}**.",ephemeral=True)
 
     async def top(self,i):
-        rows=db.leaders(i.guild_id,10); text="\n".join(f"**#{n}** <@{p['user_id']}> — `{p['points']} ELO`" for n,p in enumerate(rows,1)) or "Рейтинг пока пуст."
-        await i.response.send_message(embed=discord.Embed(title="🏆 Топ SEOR",description=text,color=color()),ephemeral=True)
+        await i.response.send_message("Используй `/top` и выбери лигу: Default, Qualifications, Division или Pro.",ephemeral=True)
 
     async def place(self,i):
         rows=db.leaders(i.guild_id,1000); pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.player(i.guild_id,i.user.id)
@@ -1588,20 +1588,35 @@ async def qualification(interaction:discord.Interaction):
     await interaction.response.send_message(embed=standard_embed(interaction.guild_id,interaction.user),ephemeral=True)
 
 
-@bot.tree.command(name="top",description="Показать топ-10 игроков")
+@bot.tree.command(name="top",description="Показать топ игроков выбранной лиги")
 @app_commands.check(command_channel_access)
-async def top(interaction:discord.Interaction):
-    rows=db.leaders(interaction.guild_id)
-    img=Image.new("RGB",(900,120+70*max(1,len(rows))),(10,14,22)); d=ImageDraw.Draw(img)
-    try: title=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",34); body=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",24)
-    except OSError: title=body=None
-    d.text((35,30),"ЛУЧШИЕ ИГРОКИ",fill=(124,58,237),font=title)
-    if not rows:d.text((35,105),"Пока нет данных",fill="white",font=body)
-    for i,p in enumerate(rows,1):
-        member=interaction.guild.get_member(p["user_id"]); name=p.get("nickname") or (member.display_name if member else str(p["user_id"]))
-        y=85+i*65; d.rounded_rectangle((25,y-12,875,y+42),12,fill=(25,31,44)); d.text((45,y),f"{i:>2}. {name[:22]}",fill="white",font=body); d.text((610,y),f"{p['points']} pts   {p['wins']}W",fill=(104,211,145),font=body)
-    out=io.BytesIO(); img.save(out,"PNG"); out.seek(0)
-    await interaction.response.send_message(file=discord.File(out,"leaderboard.png"))
+@app_commands.choices(league=[
+    app_commands.Choice(name="Default",value="Default"),
+    app_commands.Choice(name="Qualifications",value="Qualifications"),
+    app_commands.Choice(name="Division",value="Division"),
+    app_commands.Choice(name="Pro",value="Pro"),
+])
+async def top(interaction:discord.Interaction,league:app_commands.Choice[str]):
+    await interaction.response.defer(thinking=True)
+    league_name=league.value
+    league_roles=set(LEAGUE_ROLES.values())
+    selected=[]
+    for player_data in db.leaders(interaction.guild_id,1000):
+        member=interaction.guild.get_member(player_data["user_id"])
+        if not member: continue
+        member_roles={role.name for role in member.roles}
+        if league_name=="Default":
+            allowed=REGISTERED_ROLE_NAME in member_roles and not (member_roles & league_roles)
+        else:
+            allowed=LEAGUE_ROLES[league_name.lower()] in member_roles
+        if not allowed: continue
+        item=dict(player_data)
+        item["name"]=item.get("nickname") or member.display_name
+        item["avatar_url"]=str(member.display_avatar.with_size(128).url)
+        selected.append(item)
+        if len(selected)>=10: break
+    out=await asyncio.to_thread(build_leaderboard,selected,league_name)
+    await interaction.followup.send(file=discord.File(out,f"top-{league_name.lower()}.png"))
 
 
 @setup.error

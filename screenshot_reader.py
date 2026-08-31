@@ -69,7 +69,8 @@ def analyze_screenshot_sync(image_bytes, mime_type="image/png"):
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=key)
-        model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
+        configured_model = os.getenv("GEMINI_VISION_MODEL", "gemini-3.6-flash").strip()
+        models = list(dict.fromkeys((configured_model, "gemini-3.6-flash")))
         prompt = """
 Ты анализируешь скриншот итоговой таблицы матча Standoff 2.
 Верни только JSON без Markdown:
@@ -85,13 +86,19 @@ def analyze_screenshot_sync(image_bytes, mime_type="image/png"):
 }
 Не выдумывай значения. Если поле не видно, используй null для счёта/карты и 0 для статистики. Команда слева или сверху — A, справа или снизу — B. Сохрани точное написание ников.
 """
-        response = client.models.generate_content(
-            model=model,
-            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
-        )
-        cleaned = _clean_analysis(_extract_json(response.text))
-        cleaned["model"] = model
-        return cleaned
+        last_error = None
+        for model in models:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+                )
+                cleaned = _clean_analysis(_extract_json(response.text))
+                cleaned["model"] = model
+                return cleaned
+            except Exception as exc:
+                last_error = exc
+        raise last_error or RuntimeError("Gemini vision model is unavailable")
     except Exception as exc:
         return {"error": str(exc)[:300], **_clean_analysis({})}
 

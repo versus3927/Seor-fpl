@@ -20,7 +20,7 @@ from screenshot_reader import analyze_screenshot
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
-BOT_NAME = os.getenv("BOT_NAME", "Arena Queue")
+BOT_NAME = os.getenv("BOT_NAME", "Seor FACEIT")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
@@ -433,16 +433,42 @@ def match_ocr_players(guild,match,analysis):
     return analysis
 
 
-def ocr_embed_text(analysis,entered_score):
+def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
     detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "не распознан"
-    lines=[]
+    lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
-        player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}` ⚠️"
-        lines.append(f"{player} — **{item.get('kills',0)}/{item.get('deaths',0)}/{item.get('assists',0)}**, MVP {item.get('mvp',0)}")
-    stats="\n".join(lines) or "Статистика игроков не распознана."
-    error=f"\n⚠️ AI: `{analysis['error']}`" if analysis.get("error") else ""
-    return f"Введённый счёт: **{entered_score}**\nРаспознанный счёт: **{detected}**\nКарта: **{analysis.get('map') or 'не распознана'}**\nУвере��ность: **{analysis.get('confidence',0)*100:.0f}%**{error}\n\n**K/D/A со скриншота:**\n{stats}"
+        player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
+        game_id=f" · ID `{item['game_id']}`" if item.get("game_id") else ""
+        line=f"{player}{game_id}\n`{item.get('kills',0):02}/{item.get('deaths',0):02}/{item.get('assists',0):02}` · MVP **{item.get('mvp',0)}**"
+        team=str(item.get("team") or "").upper()
+        if not item.get("user_id"):
+            unmatched.append(f"⚠️ {item.get('name','?')}")
+        (lines_b if team=="B" else lines_a).append(line)
+    confidence=analysis.get("confidence",0)*100
+    has_error=bool(analysis.get("error"))
+    embed_color=discord.Color.red() if has_error else (discord.Color.green() if confidence>=80 else discord.Color.orange())
+    e=discord.Embed(
+        title=f"Матч #{match['id']} · регистрация №{submission_id}",
+        description=f"**Ожидает проверки**  •  отправил {submitter.mention}",
+        color=embed_color,
+    )
+    e.add_field(name="Результат",value=f"Со скриншота: **{detected}**\nК регистрации: **{final_score}**\nИсточник: **автораспознавание**",inline=True)
+    e.add_field(name="Матч",value=f"Лига: **{match['league']}**\nКарта: **{analysis.get('map') or match.get('map') or 'не определена'}**\nХост: <@{match['host_id']}>",inline=True)
+    e.add_field(name="Распознавание",value=f"Точность: **{confidence:.0f}%**\nМодель: `{analysis.get('model') or 'ручной режим'}`\nИгроков: **{len(analysis.get('matched_stats',[]))}/10**",inline=True)
+    e.add_field(name="CT · K / D / A",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
+    e.add_field(name="T · K / D / A",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
+    notes=[]
+    if analysis.get("notes"): notes.append(str(analysis["notes"]))
+    if unmatched: notes.append("Не привязаны: "+", ".join(unmatched))
+    if has_error:
+        raw=str(analysis["error"])
+        if "404" in raw or "NOT_FOUND" in raw or "no longer available" in raw:
+            raw="Модель Gemini из настроек больше недоступна. Бот попробовал актуальную модель; если ошибка осталась, проверь GEMINI_VISION_MODEL и доступ API."
+        notes.append("⚠️ "+raw[:700])
+    e.add_field(name="Проверка модератором",value=("\n".join(notes)[:1024] if notes else "Сверь счёт, команды и статистику со скриншотом."),inline=False)
+    e.set_footer(text="SEOR FACEIT · принять только после сверки скриншота")
+    return e
 
 
 class ResultSubmitView(discord.ui.View):
@@ -451,74 +477,48 @@ class ResultSubmitView(discord.ui.View):
 
     @discord.ui.button(label="Отправить результат", emoji="📌", style=discord.ButtonStyle.success, custom_id="result:submit")
     async def submit(self, interaction, button):
-        await interaction.response.send_modal(ResultSubmitModal())
+        await interaction.response.send_message("Используй команду **`/result`**: в одной форме укажи только **номер матча** и прикрепи **скриншот**. Счёт бот считает сам.",ephemeral=True)
 
 
-class ResultSubmitModal(discord.ui.Modal, title="Отправка результата"):
-    match_id = discord.ui.TextInput(label="ID матча", placeholder="Например: 700", max_length=10)
-    score = discord.ui.TextInput(label="Счёт", placeholder="13:9", max_length=7)
-
-    def __init__(self, match_id=None):
-        super().__init__()
-        if match_id is not None:
-            self.match_id.default = str(match_id)
-
-    async def on_submit(self, interaction):
-        try:
-            match_id = int(str(self.match_id))
-            a, b = [int(x.strip()) for x in str(self.score).replace("-", ":").split(":", 1)]
-            assert (a == 13 or b == 13) and a != b and min(a, b) >= 0
-        except Exception:
-            return await interaction.response.send_message("Проверь ID и счёт. Пример счёта: `13:9`.", ephemeral=True)
-        match = db.match(match_id)
-        if not match:
-            return await interaction.response.send_message("Матч с таким ID не найден.", ephemeral=True)
-        players = {int(x) for x in (match["team_a"] + "," + match["team_b"]).split(",")}
-        if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message("Ты не являешься участником этого матча.", ephemeral=True)
-        await interaction.response.send_message(
-            f"Теперь отправь **одним следующим сообщением** скриншот итогового счёта матча `#{match_id}`. У тебя 3 минуты.",
-            ephemeral=True,
-        )
-        def check(message):
-            return message.author.id == interaction.user.id and message.channel.id == interaction.channel_id and bool(message.attachments)
-        try:
-            message = await bot.wait_for("message", timeout=180, check=check)
-        except asyncio.TimeoutError:
-            return await interaction.followup.send("Время ожидания скриншота истекло. Нажми кнопку ещё раз.", ephemeral=True)
-        attachment = message.attachments[0]
-        if not (attachment.content_type or "").startswith("image/"):
-            return await interaction.followup.send("Нужно отправить изображение, а не другой файл.", ephemeral=True)
-        await interaction.followup.send("🔎 Считываю счёт и статистику со скриншота…",ephemeral=True)
-        try:
-            image_bytes=await attachment.read()
-            analysis=await analyze_screenshot(image_bytes,attachment.content_type or "image/png")
-            analysis=match_ocr_players(interaction.guild,match,analysis)
-        except Exception as exc:
-            analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"matched_stats":[]}
-        analysis["entered_score"]=[a,b]
-        detected_a,detected_b=analysis.get("score_a"),analysis.get("score_b")
-        detected_valid=isinstance(detected_a,int) and isinstance(detected_b,int) and (detected_a==13 or detected_b==13) and detected_a!=detected_b and analysis.get("confidence",0)>=0.55
-        final_a,final_b=(detected_a,detected_b) if detected_valid else (a,b)
-        analysis["registered_score"]=[final_a,final_b]
-        submission_id = db.create_submission(interaction.guild_id, match_id, interaction.user.id, final_a, final_b, attachment.url,json.dumps(analysis,ensure_ascii=False))
-        review = next((c for c in interaction.guild.text_channels if c.name.endswith("регистрация-игр")), None)
-        if not review:
-            return await interaction.followup.send("Канал `регистрация-игр` не найден. Администратору нужно повторно выполнить `/setup`.", ephemeral=True)
-        e = discord.Embed(
-            title=f"🤖 Авто-регистрация игры №{submission_id}",
-            description=f"Матч: **#{match_id}**\nСчёт для регистрации: **{final_a}:{final_b}**\nОтправил: {interaction.user.mention}\nСтатус: **ожидает модератора**\n\n{ocr_embed_text(analysis,f'{a}:{b}')}",
-            color=discord.Color.orange(),
-        )
-        e.set_footer(text="Модератор обязан сверить распознанные данные со скриншотом")
-        e.set_image(url=attachment.url)
-        view = discord.ui.View(timeout=None)
-        view.add_item(discord.ui.Button(label="Принять", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"result:approve:{submission_id}"))
-        view.add_item(discord.ui.Button(label="Отклонить", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"result:reject:{submission_id}"))
-        await review.send(embed=e, view=view)
-        try: await message.delete()
-        except discord.HTTPException: pass
-        await interaction.followup.send(f"Результат №{submission_id} распознан и отправлен модераторам в `регистрация-игр`.", ephemeral=True)
+async def process_result_submission(interaction,match_id,attachment):
+    match=db.match(match_id)
+    if not match:
+        return await interaction.followup.send("Матч с таким номером не найден.",ephemeral=True)
+    players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
+    if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
+    content_type=(attachment.content_type or "").lower()
+    if not content_type.startswith("image/") and not attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp")):
+        return await interaction.followup.send("Прикрепи скриншот в формате PNG, JPG или WEBP.",ephemeral=True)
+    review=next((c for c in interaction.guild.text_channels if c.name.endswith("регистрация-игр")),None)
+    if not review:
+        return await interaction.followup.send("Канал `регистрация-игр` не найден. Администратору нужно повторно выполнить `/setup`.",ephemeral=True)
+    try:
+        image_bytes=await attachment.read()
+        analysis=await analyze_screenshot(image_bytes,content_type or "image/png")
+        analysis=match_ocr_players(interaction.guild,match,analysis)
+    except Exception as exc:
+        analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"matched_stats":[]}
+    detected_a,detected_b=analysis.get("score_a"),analysis.get("score_b")
+    detected_valid=isinstance(detected_a,int) and isinstance(detected_b,int) and (detected_a==13 or detected_b==13) and detected_a!=detected_b and min(detected_a,detected_b)>=0 and analysis.get("confidence",0)>=0.55
+    if not detected_valid:
+        error=""
+        if analysis.get("error"):
+            raw=str(analysis["error"])
+            error=" Модель распознавания недоступна — проверь `GEMINI_VISION_MODEL=gemini-3.6-flash` и `GEMINI_API_KEY`." if ("404" in raw or "NOT_FOUND" in raw) else f" Ошибка AI: `{raw[:180]}`"
+        return await interaction.followup.send("❌ Не удалось уверенно прочитать итоговый счёт. Отправь более чёткий полный скриншот таблицы матча."+error,ephemeral=True)
+    final_a,final_b=detected_a,detected_b
+    analysis["registered_score"]=[final_a,final_b]
+    submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,final_a,final_b,attachment.url,json.dumps(analysis,ensure_ascii=False))
+    e=result_review_embed(submission_id,match,analysis,f"{final_a}:{final_b}",interaction.user)
+    extension="jpg" if "jpeg" in content_type else ("webp" if "webp" in content_type else "png")
+    image_name=f"match-{match_id}-result.{extension}"
+    e.set_image(url=f"attachment://{image_name}")
+    view=discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Принять",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"result:approve:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"result:reject:{submission_id}"))
+    await review.send(embed=e,view=view,file=discord.File(io.BytesIO(image_bytes),filename=image_name))
+    await interaction.followup.send(f"✅ Скриншот распознан. Результат №{submission_id} отправлен модераторам.",ephemeral=True)
 
 
 class GameLookupModal(discord.ui.Modal, title="Поиск профил��"):
@@ -639,7 +639,8 @@ class DashboardPanelView(discord.ui.View):
     async def lookup_player(self,i): await i.response.send_modal(GameLookupModal())
     async def lookup_match(self,i): await i.response.send_modal(MatchLookupDashboardModal())
     async def change_id(self,i): await i.response.send_modal(GameIdModal())
-    async def result(self,i): await i.response.send_modal(ResultSubmitModal())
+    async def result(self,i):
+        await i.response.send_message("Используй **`/result`** и в одной форме укажи номер матча и прикрепи скриншот. Счёт бот определит автоматически.",ephemeral=True)
 
     async def form(self,i):
         p=db.player(i.guild_id,i.user.id); wr=100*p["wins"]/max(1,p["games"]); kd=p["kills"]/max(1,p["deaths"])
@@ -789,22 +790,6 @@ class TicketView(discord.ui.View):
         await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказате��ьства. Администраторы с правом Administrator видят этот канал.")
         await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Автор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
         await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
-
-
-class ResultModal(discord.ui.Modal, title="Результат матча"):
-    score = discord.ui.TextInput(label="Счёт", placeholder="13:9", max_length=7)
-    def __init__(self, match_id):
-        super().__init__(); self.match_id = match_id
-    async def on_submit(self, interaction):
-        try:
-            a,b = [int(x.strip()) for x in str(self.score).replace("-",":").split(":",1)]
-            assert (a == 13 or b == 13) and a != b and min(a,b) >= 0
-        except Exception:
-            return await interaction.response.send_message("Формат: `13:9`; одна команда должна иметь 13.", ephemeral=True)
-        if not db.finish_match(self.match_id,a,b):
-            return await interaction.response.send_message("Матч не най��ен или уже завершён.", ephemeral=True)
-        e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
-        await interaction.response.send_message(embed=e)
 
 
 async def send_profile(interaction,member=None):
@@ -1443,9 +1428,12 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
     await interaction.response.send_message(f"✅ Ник участника {member.mention} изменён на **{nickname}**.",ephemeral=True)
 
 
-@bot.tree.command(name="result",description="Отправить результат матча")
+@bot.tree.command(name="result",description="Отправить номер матча и скриншот результата")
 @app_commands.check(command_channel_access)
-async def result(interaction:discord.Interaction): await interaction.response.send_modal(ResultSubmitModal())
+@app_commands.describe(match_id="Номер матча",screenshot="Полный скриншот итоговой таблицы")
+async def result(interaction:discord.Interaction,match_id:int,screenshot:discord.Attachment):
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    await process_result_submission(interaction,match_id,screenshot)
 
 
 @bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")

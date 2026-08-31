@@ -33,6 +33,7 @@ LEAGUES = {
 MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami", "Breeze", "Prison"]
 MAP_ICONS = {"Sandstone":"🏜️","Province":"🏘️","Rust":"🏭","Dune":"🌵","Hanami":"🌸","Breeze":"🌊","Prison":"⛓️"}
 MAP_VETO_TIMEOUT = 15
+REGISTERED_ROLE_NAME = "зарегистрирован"
 STAFF_ROLES = {
     "owner": "owner",
     "admin": "admin",
@@ -319,11 +320,41 @@ class RoomLimit(discord.ui.Modal, title="Лимит комнаты"):
         await interaction.response.send_message(f"Лимит: {value or 'без ограничений'}.", ephemeral=True)
 
 
-class GameIdModal(discord.ui.Modal, title="Игровой профиль"):
+def registration_embed(member=None):
+    greeting=f"{member.mention}, добро пожаловать!" if member else "Добро пожаловать в соревновательное сообщество SEOR."
+    e=discord.Embed(title="⚡ ДОБРО ПОЖАЛОВАТЬ В SEOR",description=f"{greeting}\n\nДо регистрации тебе доступен только этот раздел. Подтверди игровой профиль — после этого откроются основные каналы сервера.",color=color())
+    first_step="Открой канал **📋・регистрация** и нажми **Пройти регистрацию**." if member else "Нажми **Пройти регистрацию** ниже."
+    e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
+    e.add_field(name="02  ВВЕДИ GAME ID",value="Укажи числовой ID аккаунта Standoff 2.",inline=False)
+    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роль **{REGISTERED_ROLE_NAME}** и откроет сервер.",inline=False)
+    e.set_footer(text="SEOR CYBER • competitive platform")
+    return e
+
+
+class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
     game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="Например: 245507174", max_length=30)
     async def on_submit(self, interaction):
-        db.set_game_id(interaction.guild_id, interaction.user.id, str(self.game_id))
-        await interaction.response.send_message("Игровой ID сохранён.", ephemeral=True)
+        value=str(self.game_id).strip()
+        if not value.isdigit() or len(value) < 5:
+            return await interaction.response.send_message("Укажи корректный числовой Standoff 2 ID.",ephemeral=True)
+        db.set_game_id(interaction.guild_id,interaction.user.id,value)
+        role=discord.utils.get(interaction.guild.roles,name=REGISTERED_ROLE_NAME)
+        if not role:
+            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+        try:
+            await interaction.user.add_roles(role,reason="SEOR: регистрация игрового профиля")
+        except discord.Forbidden:
+            return await interaction.response.send_message("ID сохранён, но роль не выдана. Подними роль бота выше роли `зарегистрирован`.",ephemeral=True)
+        await interaction.response.send_message(f"✅ Регистрация завершена. Твой Game ID: **{value}**. Основные каналы сервера открыты.",ephemeral=True)
+
+
+class RegistrationView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Пройти регистрацию",emoji="⚡",style=discord.ButtonStyle.success,custom_id="seor:registration:start")
+    async def register(self,interaction,button):
+        if has_role(interaction.user,REGISTERED_ROLE_NAME):
+            return await interaction.response.send_message("Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд.",ephemeral=True)
+        await interaction.response.send_modal(GameIdModal())
 
 
 def match_ocr_players(guild,match,analysis):
@@ -716,12 +747,12 @@ class TicketView(discord.ui.View):
             staff_roles["ticket_admin"]: discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),
         }
         channel = await guild.create_text_channel(f"ticket-{interaction.user.name}"[:90], category=category, topic=f"ticket-owner:{interaction.user.id}", overwrites=overwrites)
-        await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказательства. Администраторы с правом Administrator видят этот канал.")
+        await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказате��ьства. Администраторы с правом Administrator видят этот канал.")
         await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Автор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
         await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
 
 
-class LobbyModal(discord.ui.Modal, title="Ссылка на лобби"):
+class LobbyModal(discord.ui.Modal, title="Ссылка на ��обби"):
     url = discord.ui.TextInput(label="Ссылка", placeholder="https://...", max_length=300)
     def __init__(self, match_id):
         super().__init__(); self.match_id = match_id
@@ -933,7 +964,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
 @bot.event
 async def setup_hook():
     db.init_db()
-    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView())
+    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView()); bot.add_view(RegistrationView())
     if GUILD_ID:
         guild=discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -946,6 +977,13 @@ async def setup_hook():
 async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
+
+
+@bot.event
+async def on_member_join(member):
+    if member.bot: return
+    try: await member.send(embed=registration_embed(member))
+    except discord.HTTPException: pass
 
 
 @bot.event
@@ -1009,7 +1047,9 @@ async def delete_empty_match_room(channel):
 async def on_voice_state_update(member,before,after):
     if member.bot: return
     if after.channel and after.channel.name.startswith("➕ Создать комнату"):
-        overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=True,connect=True),member:discord.PermissionOverwrite(manage_channels=True,move_members=True,mute_members=True,connect=True)}
+        registered=discord.utils.get(member.guild.roles,name=REGISTERED_ROLE_NAME)
+        overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=False,connect=False),member:discord.PermissionOverwrite(view_channel=True,manage_channels=True,move_members=True,mute_members=True,connect=True)}
+        if registered: overwrites[registered]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True)
         ch=await member.guild.create_voice_channel(f"🏠 Комната {member.display_name}",category=after.channel.category,overwrites=overwrites,user_limit=10)
         room_owners[ch.id]=member.id
         await member.move_to(ch)
@@ -1035,11 +1075,20 @@ async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     g=interaction.guild
     staff_roles=await ensure_staff_roles(g)
+    registered_role=discord.utils.get(g.roles,name=REGISTERED_ROLE_NAME)
+    if not registered_role:
+        registered_role=await g.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+    for member in g.members:
+        if member.bot or registered_role in member.roles: continue
+        if db.player(g.id,member.id).get("game_id"):
+            try: await member.add_roles(registered_role,reason="SEOR: перенос старой регистрации")
+            except discord.Forbidden: pass
 
     # /setup синхронизирует только структуру, которой управляет бот.
     # Посторонние пользовательские категории и каналы не затрагиваются.
     unique_managed = {
-        "�� SEOR INFO": 1,
+        "▶️ SEOR START": 1,
+        "📡 SEOR INFO": 1,
         "⌨️ SEOR COMMANDS": 1,
         "💬 SEOR COMMUNITY": 1,
         "🆘 SEOR SUPPORT": 1,
@@ -1083,6 +1132,31 @@ async def setup(interaction:discord.Interaction):
                 preserved=any(channel.name.startswith(prefix) for prefix in preserve_voice_prefixes)
                 if channel.name not in allowed_voice and not preserved:
                     await channel.delete(reason="SEOR /setup: голосовой канал отсутствует в актуальной схеме")
+
+    async def gate_registered(cat):
+        await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+        await cat.set_permissions(registered_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+        for channel in cat.channels:
+            if isinstance(channel,discord.TextChannel):
+                await channel.set_permissions(g.default_role,view_channel=False,send_messages=False,use_application_commands=False)
+                await channel.set_permissions(registered_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+            elif isinstance(channel,discord.VoiceChannel):
+                await channel.set_permissions(g.default_role,view_channel=False,connect=False)
+                await channel.set_permissions(registered_role,view_channel=True,connect=True,speak=True)
+
+    onboarding=await category("▶️ SEOR START")
+    await onboarding.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+    await onboarding.set_permissions(registered_role,view_channel=False)
+    await sync_channels(onboarding,text_names=("📋・регистрация",))
+    registration_channel=await text(onboarding,"📋・регистрация")
+    await registration_channel.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+    await registration_channel.set_permissions(registered_role,view_channel=False)
+    await registration_channel.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
+    async for old_message in registration_channel.history(limit=20):
+        if old_message.author==g.me:
+            try: await old_message.delete()
+            except discord.HTTPException: pass
+    await registration_channel.send(embed=registration_embed(),view=RegistrationView())
 
     info = await category("📡 SEOR INFO")
     info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
@@ -1206,6 +1280,19 @@ async def setup(interaction:discord.Interaction):
         e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
         await send_results.send(embed=e,view=ResultSubmitView())
 
+    for public_category in (info,start,community,support,private,results):
+        await gate_registered(public_category)
+    for protected_name in tuple(protected_chats)+("🛠️・чат-кураторов",):
+        await community_channels[protected_name].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
+    for league_name,(league_emoji,_) in LEAGUES.items():
+        for league_category in [c for c in g.categories if c.name==f"{league_emoji} SEOR {league_name.upper()}"]:
+            if league_name=="Default":
+                await gate_registered(league_category)
+            else:
+                await league_category.set_permissions(registered_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+                for league_channel in league_category.channels:
+                    await league_channel.set_permissions(registered_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+
     admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True),staff_roles["owner"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),staff_roles["admin"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
     for staff_key in ("developer","director","head_admin","ticket_admin","head_ac","games_admin","anticheat","moderator"):
         admin_overwrites[staff_roles[staff_key]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
@@ -1259,7 +1346,7 @@ async def delete_setup(interaction:discord.Interaction,confirm:str):
     if confirm.strip().upper() != "УДАЛИТЬ":
         return await interaction.response.send_message("Отменено. Для подтверждения нужно написать `УДАЛИТЬ`.",ephemeral=True)
     await interaction.response.send_message("Удаление структуры SEOR запущено.",ephemeral=True)
-    managed={"📡 SEOR INFO","⌨️ SEOR COMMANDS","💬 SEOR COMMUNITY","🆘 SEOR SUPPORT","🎧 SEOR PRIVATE","📮 SEOR RESULTS","🛡️ SEOR STAFF","📡 SEOR AUDIT","🚨 SEOR PRIORITY","🎫 TICKETS"}
+    managed={"▶️ SEOR START","📡 SEOR INFO","⌨️ SEOR COMMANDS","💬 SEOR COMMUNITY","🆘 SEOR SUPPORT","🎧 SEOR PRIVATE","📮 SEOR RESULTS","🛡️ SEOR STAFF","📡 SEOR AUDIT","🚨 SEOR PRIORITY","🎫 TICKETS"}
     managed.update(f"{emoji} SEOR {name.upper()}" for name,(emoji,_) in LEAGUES.items())
     for cat in [c for c in interaction.guild.categories if c.name in managed]:
         for channel in list(cat.channels):
@@ -1268,7 +1355,7 @@ async def delete_setup(interaction:discord.Interaction,confirm:str):
         try: await cat.delete(reason=f"SEOR /delete by {interaction.user}")
         except discord.HTTPException: pass
     extra_role_names=tuple(spec[0] for spec in EXTRA_ROLE_SPECS.values())
-    for role_name in tuple(STAFF_ROLES.values())+tuple(LEAGUE_ROLES.values())+extra_role_names:
+    for role_name in tuple(STAFF_ROLES.values())+tuple(LEAGUE_ROLES.values())+extra_role_names+(REGISTERED_ROLE_NAME,):
         role=discord.utils.get(interaction.guild.roles,name=role_name)
         if role:
             try: await role.delete(reason=f"SEOR /delete by {interaction.user}")

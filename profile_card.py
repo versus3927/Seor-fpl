@@ -203,9 +203,9 @@ def _compose(player, display_name, avatar_url, recent, art_path):
     league, league_color = _league(player["points"])
     short_number = str(player["user_id"])[-5:]
     _text(draw, (266, 55), f"#{short_number}", 20, MUTED)
-    _text(draw, (266, 83), display_name[:26], 38, WHITE, True)
-    _text(draw, (266, 137), f"ID: {player.get('game_id') or 'НЕ УКАЗАН'}", 21, MUTED)
-    _text(draw, (266, 174), f"{league} LEAGUE  •  {player['points']} ELO", 19, league_color, True)
+    _text(draw, (266, 78), display_name[:24], 46, WHITE, True)
+    _text(draw, (266, 137), f"ID: {player.get('game_id') or 'НЕ УКАЗАН'}", 25, MUTED)
+    _text(draw, (266, 174), f"{league} LEAGUE  •  {player['points']} ELO", 23, league_color, True)
 
     if LOGO.exists():
         logo = _cover(Image.open(LOGO), (164, 164)).convert("RGBA")
@@ -214,12 +214,14 @@ def _compose(player, display_name, avatar_url, recent, art_path):
 
     # Main statistics panel.
     _panel(draw, (30, 240, 1010, 685), primary)
-    _text(draw, (64, 275), "▮▮▮  STATISTIC", 25, WHITE, True)
+    _text(draw, (64, 272), "▮▮▮  STATISTIC", 30, WHITE, True)
     kills = player["kills"]
     deaths = player["deaths"]
     games = player["games"]
     wins = player["wins"]
     losses = player.get("losses", max(0, games - wins))
+    assists = player.get("assists", 0)
+    mvp = player.get("mvp", 0)
     kd = kills / max(1, deaths)
     winrate = wins / max(1, games)
 
@@ -227,10 +229,10 @@ def _compose(player, display_name, avatar_url, recent, art_path):
     draw.ellipse(donut_box, outline=(72, 74, 91, 210), width=16)
     draw.arc(donut_box, -90, -90 + min(360, kd / 2.0 * 360), fill=primary, width=16)
     draw.arc(donut_box, -90 + min(360, kd / 2.0 * 360), 270, fill=secondary, width=16)
-    _text(draw, (165, 423), f"{kd:.2f}", 35, WHITE, True, "mm")
-    _text(draw, (286, 354), "KILL / DEATHS", 19, MUTED)
-    _text(draw, (286, 398), f"K = {kills}", 26, primary, True)
-    _text(draw, (460, 398), f"D = {deaths}", 26, secondary, True)
+    _text(draw, (165, 423), f"{kd:.2f}", 43, WHITE, True, "mm")
+    _text(draw, (286, 350), "KILL / DEATHS", 22, MUTED)
+    _text(draw, (286, 395), f"K = {kills}", 30, primary, True)
+    _text(draw, (470, 395), f"D = {deaths}", 30, secondary, True)
 
     level = max(1, min(10, 1 + max(0, player["points"] - 900) // 120))
     _text(draw, (660, 345), "LEVEL", 18, MUTED)
@@ -244,29 +246,30 @@ def _compose(player, display_name, avatar_url, recent, art_path):
         ("AVG", f"{kills / max(1, games):.1f}", min(1, kills / max(1, games) / 25)),
         ("IMPACT", f"{kd + winrate:.2f}", min(1, (kd + winrate) / 2.5)),
         ("KPR", f"{kills / max(1, games):.2f}", min(1, kills / max(1, games) / 25)),
-        ("GAMES", games, min(1, games / 50)),
+        ("ASSISTS", assists, min(1, assists / max(1, games * 10))),
         ("WIN RATE", f"{winrate * 100:.0f}%", winrate),
     ]
     for index, (label, value, ratio) in enumerate(metrics):
         col, row = index % 3, index // 3
         x, y = 64 + col * 312, 520 + row * 78
         draw.rounded_rectangle((x, y, x + 286, y + 64), radius=13, fill=(27, 28, 39, 225), outline=(*primary, 48), width=1)
-        _text(draw, (x + 16, y + 13), label, 15, MUTED)
-        _text(draw, (x + 270, y + 12), value, 25, WHITE, True, "ra")
+        _text(draw, (x + 16, y + 12), label, 17, MUTED)
+        _text(draw, (x + 270, y + 9), value, 29, WHITE, True, "ra")
         _progress(draw, (x + 16, y + 46, x + 270, y + 52), ratio, primary, secondary)
 
     # Right column.
     _panel(draw, (1030, 240, 1506, 430), primary)
     _text(draw, (1062, 274), "LEAGUE", 17, MUTED)
-    _text(draw, (1062, 309), league.title(), 33, league_color, True)
+    _text(draw, (1062, 305), league.title(), 40, league_color, True)
     _text(draw, (1062, 363), "ELO", 17, MUTED)
     _text(draw, (1120, 363), player["points"], 22, WHITE, True)
     _text(draw, (1290, 274), "PLAYTIME", 17, MUTED)
-    _text(draw, (1290, 309), f"{games * 0.6:.1f}h", 27, WHITE, True)
-    _text(draw, (1290, 363), f"{wins}W  {losses}L", 19, MUTED)
+    _text(draw, (1290, 307), f"{games * 0.6:.1f}h", 31, WHITE, True)
+    _text(draw, (1062, 397), f"{wins}W  {losses}L", 20, MUTED)
+    _text(draw, (1290, 363), f"MVP  {mvp}", 20, MUTED)
 
     _panel(draw, (1030, 450, 1506, 685), primary)
-    _text(draw, (1062, 483), "RECENT MATCHES", 22, WHITE, True)
+    _text(draw, (1062, 479), "RECENT MATCHES", 27, WHITE, True)
     results = [_match_result(match, player["user_id"]) for match in recent[:15]]
     results = [result for result in results if result]
     for index in range(15):
@@ -280,7 +283,7 @@ def _compose(player, display_name, avatar_url, recent, art_path):
 
     # Map statistics.
     _panel(draw, (30, 710, 1506, 995), primary)
-    _text(draw, (64, 744), "✦  MAP STATISTIC", 24, WHITE, True)
+    _text(draw, (64, 740), "✦  MAP STATISTIC", 29, WHITE, True)
     map_rows = _map_rows(recent, player["user_id"])
     for index, (name, map_wins, map_losses) in enumerate(map_rows):
         col, row = index % 4, index // 4
@@ -289,7 +292,7 @@ def _compose(player, display_name, avatar_url, recent, art_path):
         draw.rounded_rectangle((x, y, x + width, y + 76), radius=14, fill=(26, 27, 38, 235), outline=(*primary, 55), width=1)
         total = map_wins + map_losses
         map_wr = map_wins / max(1, total)
-        _text(draw, (x + 18, y + 13), name, 17, WHITE, True)
+        _text(draw, (x + 18, y + 10), name, 19, WHITE, True)
         _text(draw, (x + 18, y + 42), f"W {map_wins}   L {map_losses}", 15, MUTED)
         _text(draw, (x + width - 18, y + 42), f"WR {map_wr * 100:.0f}%", 15, primary, True, "ra")
 

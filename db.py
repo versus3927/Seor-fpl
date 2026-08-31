@@ -23,6 +23,7 @@ def init_db():
           game_id TEXT, games INTEGER NOT NULL DEFAULT 0,
           wins INTEGER NOT NULL DEFAULT 0, losses INTEGER NOT NULL DEFAULT 0,
           kills INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0,
+          assists INTEGER NOT NULL DEFAULT 0, mvp INTEGER NOT NULL DEFAULT 0,
           points INTEGER NOT NULL DEFAULT 1000,
           PRIMARY KEY(guild_id,user_id));
         CREATE TABLE IF NOT EXISTS matches(
@@ -36,10 +37,15 @@ def init_db():
           match_id INTEGER NOT NULL, submitter_id INTEGER NOT NULL,
           score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
           screenshot_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-          reviewer_id INTEGER, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+          reviewer_id INTEGER, reason TEXT, analysis_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS config(
           guild_id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
         """)
+        player_columns={row[1] for row in con.execute("PRAGMA table_info(players)")}
+        if "assists" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN assists INTEGER NOT NULL DEFAULT 0")
+        if "mvp" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN mvp INTEGER NOT NULL DEFAULT 0")
+        submission_columns={row[1] for row in con.execute("PRAGMA table_info(result_submissions)")}
+        if "analysis_json" not in submission_columns: con.execute("ALTER TABLE result_submissions ADD COLUMN analysis_json TEXT")
 
 def ensure_player(guild_id:int, user_id:int):
     with connect() as con:
@@ -78,9 +84,9 @@ def set_lobby(match_id:int,url:str):
     with connect() as con:
         con.execute("UPDATE matches SET lobby_url=?,status='playing' WHERE id=?",(url,match_id))
 
-def create_submission(guild_id:int,match_id:int,submitter_id:int,score_a:int,score_b:int,screenshot_url:str):
+def create_submission(guild_id:int,match_id:int,submitter_id:int,score_a:int,score_b:int,screenshot_url:str,analysis_json:str|None=None):
     with connect() as con:
-        cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url) VALUES(?,?,?,?,?,?)",(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url))
+        cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url,analysis_json) VALUES(?,?,?,?,?,?,?)",(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url,analysis_json))
         return cur.lastrowid
 
 def submission(submission_id:int):
@@ -96,6 +102,15 @@ def review_submission(submission_id:int,status:str,reviewer_id:int,reason:str|No
 def recent_matches(guild_id:int,limit:int=10):
     with connect() as con:
         return [dict(x) for x in con.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit))]
+
+def apply_player_stats(guild_id:int,stats:list[dict]):
+    with connect() as con:
+        for item in stats:
+            user_id=item.get("user_id")
+            if not user_id: continue
+            con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(guild_id,int(user_id)))
+            con.execute("UPDATE players SET kills=kills+?,deaths=deaths+?,assists=assists+?,mvp=mvp+? WHERE guild_id=? AND user_id=?",(
+                max(0,int(item.get("kills",0))),max(0,int(item.get("deaths",0))),max(0,int(item.get("assists",0))),max(0,int(item.get("mvp",0))),guild_id,int(user_id)))
 
 def finish_match(match_id:int,score_a:int,score_b:int):
     with connect() as con:

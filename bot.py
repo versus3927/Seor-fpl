@@ -688,9 +688,14 @@ class DashboardPanelView(discord.ui.View):
         rows=db.recent_matches(i.guild_id,10); text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
         await i.response.send_message(embed=discord.Embed(title="🕹️ Последние матчи",description=text,color=color()),ephemeral=True)
 
-    async def party_create(self,i): await i.response.send_message("👥 Тестовое пати создано. Приглашение игроков будет добавлено в следующем модуле.",ephemeral=True)
-    async def party_show(self,i): await i.response.send_message("👥 Сейчас ты не состоишь в активном пати.",ephemeral=True)
-    async def party_leave(self,i): await i.response.send_message("🚪 Ты покинул активное пати.",ephemeral=True)
+    async def party_create(self,i): await i.response.send_message("Используй `/party create` и выбери лигу: Default, Qualifications, Pro или PC.",ephemeral=True)
+    async def party_show(self,i):
+        party=db.party_for_user(i.guild_id,i.user.id)
+        if not party: return await i.response.send_message("👥 Ты не состоишь в активном пати.",ephemeral=True)
+        await i.response.send_message(embed=party_embed(party),ephemeral=True)
+    async def party_leave(self,i):
+        result=db.leave_party(i.guild_id,i.user.id)
+        await i.response.send_message("🚪 Ты покинул пати." if result!="not_in_party" else "Ты не состоишь в пати.",ephemeral=True)
     async def account(self,i):
         p=db.player(i.guild_id,i.user.id)
         await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}**\nМатчей: **{p['games']}**",ephemeral=True)
@@ -1043,6 +1048,17 @@ async def on_member_join(member):
 async def on_interaction(interaction):
     if interaction.type != discord.InteractionType.component: return
     cid=interaction.data.get("custom_id","")
+    if cid.startswith("party:accept:") or cid.startswith("party:decline:"):
+        _,action,party_id,target_id=cid.split(":")
+        if interaction.user.id!=int(target_id):
+            return await interaction.response.send_message("Это приглашение предназначено другому участнику.",ephemeral=True)
+        if action=="decline":
+            return await interaction.response.edit_message(content="❌ Приглашение отклонено.",embed=None,view=None)
+        result=db.add_party_member(interaction.guild_id,int(party_id),interaction.user.id)
+        messages={"full":"Пати уже заполнено.","already_in_party":"Ты уже состоишь в другом пати.","not_found":"Пати больше не существует."}
+        if result!="ok": return await interaction.response.send_message(messages.get(result,"Не удалось вступить в пати."),ephemeral=True)
+        party=db.party_for_user(interaction.guild_id,interaction.user.id)
+        return await interaction.response.edit_message(content=f"✅ {interaction.user.mention} вступил в пати!",embed=party_embed(party),view=None)
     if cid.startswith("match:getid:"):
         match_id=int(cid.rsplit(":",1)[1]); match_data=db.match(match_id)
         if not match_data:
@@ -1128,6 +1144,58 @@ async def on_voice_state_update(member,before,after):
         old_task=match_room_cleanup.pop(before.channel.id,None)
         if old_task: old_task.cancel()
         match_room_cleanup[before.channel.id]=asyncio.create_task(delete_empty_match_room(before.channel))
+
+
+def party_embed(party):
+    members="\n".join(f"• <@{uid}>"+(" 👑" if uid==party["leader_id"] else "") for uid in party["members"])
+    return discord.Embed(title=f"👥 Пати #{party['id']}",description=f"Лига: **{party['league']}**\nУчастники: **{len(party['members'])}/3**\n\n{members}",color=color())
+
+
+party_group=app_commands.Group(name="party",description="Управление пати")
+
+@party_group.command(name="create",description="Создать пати в выбранной лиге")
+@app_commands.check(command_channel_access)
+@app_commands.choices(league=[
+    app_commands.Choice(name="Default",value="Default"),
+    app_commands.Choice(name="Qualifications",value="Qualifications"),
+    app_commands.Choice(name="Pro",value="Pro"),
+    app_commands.Choice(name="PC",value="PC"),
+])
+async def party_create_command(interaction:discord.Interaction,league:app_commands.Choice[str]):
+    party_id=db.create_party(interaction.guild_id,interaction.user.id,league.value)
+    if not party_id:
+        return await interaction.response.send_message("Ты уже состоишь в пати. Сначала используй `/party leave`.",ephemeral=True)
+    await interaction.response.send_message(embed=party_embed(db.party_for_user(interaction.guild_id,interaction.user.id)),ephemeral=True)
+
+@party_group.command(name="invite",description="Пригласить участника в своё пати")
+@app_commands.check(command_channel_access)
+async def party_invite_command(interaction:discord.Interaction,member:discord.Member):
+    party=db.party_for_user(interaction.guild_id,interaction.user.id)
+    if not party or party["leader_id"]!=interaction.user.id:
+        return await interaction.response.send_message("Приглашать может только лидер пати.",ephemeral=True)
+    if member.bot or member.id in party["members"]:
+        return await interaction.response.send_message("Этого участника нельзя пригласить.",ephemeral=True)
+    if len(party["members"])>=3:
+        return await interaction.response.send_message("Пати уже заполнено: 3/3.",ephemeral=True)
+    view=discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Вступить",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"party:accept:{party['id']}:{member.id}"))
+    view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.secondary,custom_id=f"party:decline:{party['id']}:{member.id}"))
+    await interaction.response.send_message(content=f"{member.mention}, тебя приглашают в пати **{party['league']}**.",embed=party_embed(party),view=view)
+
+@party_group.command(name="info",description="Показать своё пати")
+@app_commands.check(command_channel_access)
+async def party_info_command(interaction:discord.Interaction):
+    party=db.party_for_user(interaction.guild_id,interaction.user.id)
+    if not party: return await interaction.response.send_message("Ты не состоишь в пати.",ephemeral=True)
+    await interaction.response.send_message(embed=party_embed(party),ephemeral=True)
+
+@party_group.command(name="leave",description="Покинуть пати")
+@app_commands.check(command_channel_access)
+async def party_leave_command(interaction:discord.Interaction):
+    result=db.leave_party(interaction.guild_id,interaction.user.id)
+    await interaction.response.send_message("🚪 Ты покинул пати." if result!="not_in_party" else "Ты не состоишь в пати.",ephemeral=True)
+
+bot.tree.add_command(party_group)
 
 
 @bot.tree.command(name="setup",description="Создать структуру лиг и панели")

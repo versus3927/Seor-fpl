@@ -40,6 +40,13 @@ def init_db():
           reviewer_id INTEGER, reason TEXT, analysis_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS config(
           guild_id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS parties(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
+          leader_id INTEGER NOT NULL, league TEXT NOT NULL,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS party_members(
+          guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, party_id INTEGER NOT NULL,
+          PRIMARY KEY(guild_id,user_id));
         """)
         player_columns={row[1] for row in con.execute("PRAGMA table_info(players)")}
         if "assists" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN assists INTEGER NOT NULL DEFAULT 0")
@@ -117,6 +124,43 @@ def player_by_game_id(guild_id:int,game_id:str):
     with connect() as con:
         row=con.execute("SELECT * FROM players WHERE guild_id=? AND game_id=?",(guild_id,game_id)).fetchone()
         return dict(row) if row else None
+
+def party_for_user(guild_id:int,user_id:int):
+    with connect() as con:
+        row=con.execute("SELECT p.* FROM parties p JOIN party_members m ON m.party_id=p.id WHERE m.guild_id=? AND m.user_id=?",(guild_id,user_id)).fetchone()
+        if not row: return None
+        party=dict(row)
+        party["members"]=[int(x[0]) for x in con.execute("SELECT user_id FROM party_members WHERE party_id=? ORDER BY user_id=? DESC,user_id",(party["id"],party["leader_id"]))]
+        return party
+
+def create_party(guild_id:int,leader_id:int,league:str):
+    if party_for_user(guild_id,leader_id): return None
+    with connect() as con:
+        cur=con.execute("INSERT INTO parties(guild_id,leader_id,league) VALUES(?,?,?)",(guild_id,leader_id,league))
+        party_id=cur.lastrowid
+        con.execute("INSERT INTO party_members(guild_id,user_id,party_id) VALUES(?,?,?)",(guild_id,leader_id,party_id))
+        return party_id
+
+def add_party_member(guild_id:int,party_id:int,user_id:int,max_size:int=3):
+    with connect() as con:
+        party=con.execute("SELECT * FROM parties WHERE id=? AND guild_id=?",(party_id,guild_id)).fetchone()
+        if not party: return "not_found"
+        if con.execute("SELECT 1 FROM party_members WHERE guild_id=? AND user_id=?",(guild_id,user_id)).fetchone(): return "already_in_party"
+        if con.execute("SELECT COUNT(*) FROM party_members WHERE party_id=?",(party_id,)).fetchone()[0]>=max_size: return "full"
+        con.execute("INSERT INTO party_members(guild_id,user_id,party_id) VALUES(?,?,?)",(guild_id,user_id,party_id))
+        return "ok"
+
+def leave_party(guild_id:int,user_id:int):
+    party=party_for_user(guild_id,user_id)
+    if not party: return "not_in_party"
+    with connect() as con:
+        con.execute("DELETE FROM party_members WHERE guild_id=? AND user_id=?",(guild_id,user_id))
+        left=[int(x[0]) for x in con.execute("SELECT user_id FROM party_members WHERE party_id=?",(party["id"],))]
+        if not left:
+            con.execute("DELETE FROM parties WHERE id=?",(party["id"],)); return "disbanded"
+        if party["leader_id"]==user_id:
+            con.execute("UPDATE parties SET leader_id=? WHERE id=?",(left[0],party["id"]))
+        return "left"
 
 def leaders(guild_id:int, limit:int=10):
     with connect() as con:

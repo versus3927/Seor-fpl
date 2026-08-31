@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 import db
 from profile_card import build_profile_card
 from leaderboard_card import build_leaderboard
+from matches_card import build_matches_card
 from screenshot_reader import analyze_screenshot
 
 load_dotenv()
@@ -689,9 +690,7 @@ class DashboardPanelView(discord.ui.View):
     async def norms(self,i):
         await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\nЛиги по ELO: Default 1000 · Qualifications 1150 · Division 1350 · Pro 1600.",ephemeral=True)
 
-    async def matches(self,i):
-        rows=db.recent_matches(i.guild_id,10); text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
-        await i.response.send_message(embed=discord.Embed(title="🕹️ Последние матчи",description=text,color=color()),ephemeral=True)
+    async def matches(self,i): await send_recent_matches(i)
 
     async def party_create(self,i): await i.response.send_message("Используй `/party create` и выбери лигу: Default, Qualifications, Pro или PC.",ephemeral=True)
     async def party_show(self,i):
@@ -784,14 +783,11 @@ class DashboardQuickView(discord.ui.View):
     @discord.ui.button(label="Профиль",emoji="👤",style=discord.ButtonStyle.primary,row=0)
     async def profile(self,i,b): await send_profile(i)
     @discord.ui.button(label="Последние матчи",emoji="🎮",style=discord.ButtonStyle.primary,row=0)
-    async def matches(self,i,b):
-        rows=db.recent_matches(i.guild_id,10)
-        text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
-        await i.response.send_message(embed=discord.Embed(title="🎮 Последние матчи",description=text,color=color()),ephemeral=True)
+    async def matches(self,i,b): await send_recent_matches(i)
     @discord.ui.button(label="Отправить результат",emoji="📤",style=discord.ButtonStyle.success,row=0)
     async def result(self,i,b): await i.response.send_modal(ResultSubmitModal())
     @discord.ui.button(label="Топ лиги",emoji="🏆",style=discord.ButtonStyle.secondary,row=1)
-    async def top(self,i,b): await i.response.send_message("Используй `/top` и выбери нужную лигу.",ephemeral=True)
+    async def top(self,i,b): await i.response.send_message(embed=league_top_embed(),view=LeagueTopView(),ephemeral=True)
     @discord.ui.button(label="Моё пати",emoji="👥",style=discord.ButtonStyle.secondary,row=1)
     async def party(self,i,b):
         party=db.party_for_user(i.guild_id,i.user.id)
@@ -970,6 +966,63 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
             return await interaction.response.send_message("Матч не най��ен или уже завершён.", ephemeral=True)
         e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
         await interaction.response.send_message(embed=e)
+
+
+async def send_recent_matches(interaction,limit:int=10):
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    rows=db.recent_matches(interaction.guild_id,limit)
+    card=await asyncio.to_thread(build_matches_card,rows)
+    await interaction.followup.send(file=discord.File(card,"recent-matches.png"),ephemeral=True)
+
+
+async def send_league_top(interaction,league_name:str,ephemeral:bool=True):
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=ephemeral,thinking=True)
+    league_roles=set(LEAGUE_ROLES.values())
+    selected=[]
+    for player_data in db.leaders(interaction.guild_id,1000):
+        member=interaction.guild.get_member(player_data["user_id"])
+        if not member: continue
+        member_roles={role.name for role in member.roles}
+        if league_name=="Default":
+            allowed=REGISTERED_ROLE_NAME in member_roles and not (member_roles & league_roles)
+        else:
+            allowed=LEAGUE_ROLES[league_name.lower()] in member_roles
+        if not allowed: continue
+        item=dict(player_data)
+        item["name"]=item.get("nickname") or member.display_name
+        item["avatar_url"]=str(member.display_avatar.with_size(128).url)
+        selected.append(item)
+        if len(selected)>=10: break
+    out=await asyncio.to_thread(build_leaderboard,selected,league_name)
+    await interaction.followup.send(file=discord.File(out,f"top-{league_name.lower()}.png"),ephemeral=ephemeral)
+
+
+class LeagueTopView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Default",emoji="⚪",style=discord.ButtonStyle.secondary,custom_id="top:default",row=0)
+    async def default_top(self,i,b): await send_league_top(i,"Default")
+
+    @discord.ui.button(label="Qualifications",emoji="🟡",style=discord.ButtonStyle.secondary,custom_id="top:qualifications",row=0)
+    async def qualifications_top(self,i,b): await send_league_top(i,"Qualifications")
+
+    @discord.ui.button(label="Division",emoji="🟣",style=discord.ButtonStyle.secondary,custom_id="top:division",row=0)
+    async def division_top(self,i,b): await send_league_top(i,"Division")
+
+    @discord.ui.button(label="Pro",emoji="🔴",style=discord.ButtonStyle.secondary,custom_id="top:pro",row=0)
+    async def pro_top(self,i,b): await send_league_top(i,"Pro")
+
+
+def league_top_embed():
+    e=discord.Embed(title="🏆 ТОП СЕРВЕРА",description="Выбери лигу — бот пришлёт красочную карточку топ-10 игроков этой лиги.",color=color())
+    e.add_field(name="⚪ Default",value="Зарегистрированные без лиги",inline=True)
+    e.add_field(name="🟡 Qualifications",value="Участники квалификации",inline=True)
+    e.add_field(name="🟣 Division",value="Участники Division",inline=True)
+    e.add_field(name="🔴 Pro",value="Участники Pro",inline=True)
+    e.set_footer(text="Топ строится по ELO и учитывает только игроков с ролью лиги")
+    return e
 
 
 async def send_profile(interaction,member=None):
@@ -1154,7 +1207,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
 @bot.event
 async def setup_hook():
     db.init_db()
-    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView()); bot.add_view(RegistrationView()); bot.add_view(StaffControlView())
+    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView()); bot.add_view(RegistrationView()); bot.add_view(StaffControlView()); bot.add_view(LeagueTopView())
     if GUILD_ID:
         guild=discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -1449,7 +1502,13 @@ async def setup(interaction:discord.Interaction):
     commands_embed.set_footer(text="Стандарт квалификации: K/D 1.00 • Division и Pro освобождены")
     await commands_channel.send(embed=commands_embed)
     dashboard = await text(start, "📊・дашборд")
-    await text(start, "🏆・топ-сервера")
+    top_channel = await text(start, "🏆・топ-сервера")
+    await top_channel.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=True)
+    async for old_message in top_channel.history(limit=20):
+        if old_message.author == g.me:
+            try: await old_message.delete()
+            except discord.HTTPException: pass
+    await top_channel.send(embed=league_top_embed(),view=LeagueTopView())
     async for old_message in dashboard.history(limit=20):
         if old_message.author == g.me:
             try: await old_message.delete()
@@ -1689,6 +1748,11 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
     await interaction.response.send_message(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
 
 
+@bot.tree.command(name="matches",description="Показать последние матчи карточкой")
+@app_commands.check(command_channel_access)
+async def matches_command(interaction:discord.Interaction): await send_recent_matches(interaction)
+
+
 @bot.tree.command(name="match_info",description="Показать информацию о матче")
 @app_commands.check(command_channel_access)
 async def match_info(interaction:discord.Interaction,match_id:int):
@@ -1732,26 +1796,7 @@ async def qualification(interaction:discord.Interaction):
     app_commands.Choice(name="Pro",value="Pro"),
 ])
 async def top(interaction:discord.Interaction,league:app_commands.Choice[str]):
-    await interaction.response.defer(thinking=True)
-    league_name=league.value
-    league_roles=set(LEAGUE_ROLES.values())
-    selected=[]
-    for player_data in db.leaders(interaction.guild_id,1000):
-        member=interaction.guild.get_member(player_data["user_id"])
-        if not member: continue
-        member_roles={role.name for role in member.roles}
-        if league_name=="Default":
-            allowed=REGISTERED_ROLE_NAME in member_roles and not (member_roles & league_roles)
-        else:
-            allowed=LEAGUE_ROLES[league_name.lower()] in member_roles
-        if not allowed: continue
-        item=dict(player_data)
-        item["name"]=item.get("nickname") or member.display_name
-        item["avatar_url"]=str(member.display_avatar.with_size(128).url)
-        selected.append(item)
-        if len(selected)>=10: break
-    out=await asyncio.to_thread(build_leaderboard,selected,league_name)
-    await interaction.followup.send(file=discord.File(out,f"top-{league_name.lower()}.png"))
+    await send_league_top(interaction,league.value,ephemeral=False)
 
 
 @setup.error

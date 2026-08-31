@@ -323,9 +323,9 @@ class RoomLimit(discord.ui.Modal, title="Лимит комнаты"):
 def registration_embed(member=None):
     greeting=f"{member.mention}, добро пожаловать!" if member else "Добро пожаловать в соревновательное сообщество SEOR."
     e=discord.Embed(title="⚡ ДОБРО ПОЖАЛОВАТЬ В SEOR",description=f"{greeting}\n\nДо регистрации тебе доступен только этот раздел. Подтверди игровой профиль — после этого откроются основные каналы сервера.",color=color())
-    first_step="Открой канал **📋・регистрация** и нажми **Пройти регистрацию**." if member else "Нажми **Пройти регистрацию** ниже."
+    first_step="Открой канал **📋・регистрация** и выбери нужную кнопку." if member else "Выбери **Регистрация** для нового профиля или **Войти по данным** для восстановления старого."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
-    e.add_field(name="02  ЗАПОЛНИ ПРОФИЛЬ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
+    e.add_field(name="02  УКАЖИ ДАННЫЕ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
     e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роль **{REGISTERED_ROLE_NAME}** и откроет сервер.",inline=False)
     e.set_footer(text="SEOR CYBER • competitive platform")
     return e
@@ -341,6 +341,9 @@ class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
             return await interaction.response.send_message("Укажи корректный числовой Standoff 2 ID.",ephemeral=True)
         if len(nickname)<2:
             return await interaction.response.send_message("Игровой ник должен содержать минимум 2 символа.",ephemeral=True)
+        owner=db.game_id_owner(value)
+        if owner and (owner["guild_id"]!=interaction.guild_id or owner["user_id"]!=interaction.user.id):
+            return await interaction.response.send_message("❌ Этот Standoff 2 ID уже занят. Если это твой старый профиль, используй кнопку **Войти по данным**.",ephemeral=True)
         db.set_registration(interaction.guild_id,interaction.user.id,nickname,value)
         try: await interaction.user.edit(nick=nickname,reason="SEOR: игровой ник при регистрации")
         except discord.Forbidden: pass
@@ -354,13 +357,43 @@ class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
         await interaction.response.send_message(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}**. Основные каналы сервера открыты.",ephemeral=True)
 
 
+class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
+    nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Ник из старого профиля", min_length=2, max_length=24)
+    game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="ID из старого профиля", max_length=30)
+
+    async def on_submit(self, interaction):
+        nickname=str(self.nickname).strip()
+        game_id=str(self.game_id).strip()
+        if not game_id.isdigit() or len(game_id)<5:
+            return await interaction.response.send_message("Укажи корректный числовой Standoff 2 ID.",ephemeral=True)
+        profile=db.restore_registration(interaction.guild_id,interaction.user.id,nickname,game_id)
+        if not profile:
+            return await interaction.response.send_message("❌ Профиль с таким ником и Standoff 2 ID не найден. Проверь данные или пройди новую регистрацию.",ephemeral=True)
+        try: await interaction.user.edit(nick=profile["nickname"],reason="SEOR: восстановление игрового профиля")
+        except discord.Forbidden: pass
+        role=discord.utils.get(interaction.guild.roles,name=REGISTERED_ROLE_NAME)
+        if not role:
+            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+        try:
+            await interaction.user.add_roles(role,reason="SEOR: вход по данным старого профиля")
+        except discord.Forbidden:
+            return await interaction.response.send_message("Профиль восстановлен, но роль не выдана. Подними роль бота выше роли `зарегистрирован`.",ephemeral=True)
+        await interaction.response.send_message(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен, статистика сохранена. Основные каналы сервера открыты.",ephemeral=True)
+
+
 class RegistrationView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Пройти регистрацию",emoji="⚡",style=discord.ButtonStyle.success,custom_id="seor:registration:start")
+    @discord.ui.button(label="Регистрация",emoji="⚡",style=discord.ButtonStyle.success,custom_id="seor:registration:start")
     async def register(self,interaction,button):
         if has_role(interaction.user,REGISTERED_ROLE_NAME):
             return await interaction.response.send_message("Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд.",ephemeral=True)
         await interaction.response.send_modal(GameIdModal())
+
+    @discord.ui.button(label="Войти по данным",emoji="🔑",style=discord.ButtonStyle.primary,custom_id="seor:registration:login")
+    async def login(self,interaction,button):
+        if has_role(interaction.user,REGISTERED_ROLE_NAME):
+            return await interaction.response.send_message("Ты уже вошёл в профиль SEOR.",ephemeral=True)
+        await interaction.response.send_modal(LoginByDataModal())
 
 
 def match_ocr_players(guild,match,analysis):
@@ -758,21 +791,6 @@ class TicketView(discord.ui.View):
         await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
 
 
-class LobbyIdModal(discord.ui.Modal, title="ID игрового лобби"):
-    lobby_id = discord.ui.TextInput(label="ID лобби", placeholder="Например: 482193", min_length=3, max_length=32)
-    def __init__(self, match_id):
-        super().__init__(); self.match_id = match_id
-    async def on_submit(self, interaction):
-        m=db.match(self.match_id)
-        if not m or interaction.user.id!=m["host_id"]:
-            return await interaction.response.send_message("ID игрового лобби может указать только хост.",ephemeral=True)
-        value=str(self.lobby_id).strip()
-        if not value or "http://" in value.lower() or "https://" in value.lower():
-            return await interaction.response.send_message("Укажи только ID без ссылки.",ephemeral=True)
-        db.set_lobby(self.match_id,value)
-        await interaction.response.send_message(f"✅ ID игрового лобби сохранён: **{value}**.",ephemeral=True)
-
-
 class ResultModal(discord.ui.Modal, title="Результат матча"):
     score = discord.ui.TextInput(label="Счёт", placeholder="13:9", max_length=7)
     def __init__(self, match_id):
@@ -959,7 +977,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
         if m.bot: continue
         try: await m.move_to(vb)
         except discord.HTTPException: pass
-    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\nНажми **Получить ID**. Хост при первом нажатии укажет ID игрового лобби.",color=color())
+    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\nНажми **Получить ID** — бот автоматически покажет Standoff 2 ID хоста, указанный при регистрации.",color=color())
     e.add_field(name="🛡 CT",value="\n".join(f"• {m.mention}" for m in a))
     e.add_field(name="💣 T",value="\n".join(f"• {m.mention}" for m in b))
     view=discord.ui.View(timeout=None)
@@ -1004,11 +1022,13 @@ async def on_interaction(interaction):
         player_ids={int(x) for x in (match_data["team_a"]+","+match_data["team_b"]).split(",") if x}
         if interaction.user.id not in player_ids and not can_administer(interaction.user):
             return await interaction.response.send_message("ID доступен только участникам матча.",ephemeral=True)
-        if match_data.get("lobby_url"):
-            return await interaction.response.send_message(f"🆔 ID игрового лобби: **{match_data['lobby_url']}**",ephemeral=True)
-        if interaction.user.id==match_data["host_id"]:
-            return await interaction.response.send_modal(LobbyIdModal(match_id))
-        return await interaction.response.send_message("Хост ещё не указал ID игрового лобби.",ephemeral=True)
+        host_profile=db.player(interaction.guild_id,match_data["host_id"])
+        host_game_id=str(host_profile.get("game_id") or "").strip()
+        if not host_game_id:
+            return await interaction.response.send_message("У хоста не указан Standoff 2 ID. Хосту нужно добавить его через регистрацию или `/set_game_id`.",ephemeral=True)
+        host_member=interaction.guild.get_member(match_data["host_id"])
+        host_name=host_member.mention if host_member else (host_profile.get("nickname") or f"игрок {match_data['host_id']}")
+        return await interaction.response.send_message(f"🆔 Standoff 2 ID хоста {host_name}: **{host_game_id}**",ephemeral=True)
     elif cid.startswith("result:approve:") or cid.startswith("result:reject:"):
         submission_id = int(cid.rsplit(":", 1)[1])
         sub = db.submission(submission_id)
@@ -1048,9 +1068,9 @@ async def on_interaction(interaction):
 async def delete_empty_match_room(channel):
     task=asyncio.current_task()
     try:
-        await asyncio.sleep(180)
+        await asyncio.sleep(60)
         if not channel.members:
-            await channel.delete(reason="Комната матча пуста 3 минуты")
+            await channel.delete(reason="Комната матча пуста 1 минуту")
     except (asyncio.CancelledError,discord.HTTPException):
         pass
     finally:
@@ -1197,6 +1217,7 @@ async def setup(interaction:discord.Interaction):
     commands_embed=discord.Embed(title="⌨️ КОМАНДЫ SEOR",description="Используй slash-команды только в этом канале.",color=color())
     commands_embed.add_field(name="👤 Игрок",value="`/profile` — профиль\n`/set_game_id` — игровой ID\n`/standard` — норматив K/D\n`/qualification` — личная проверка норматива\n`/top` — топ игроков",inline=False)
     commands_embed.add_field(name="🎮 Матчи",value="`/result` — отправить результат\n`/match_info` — информация о матче",inline=False)
+    commands_embed.add_field(name="🛡️ Администрация",value="`/set_nickname` — изменить ник участника на сервере",inline=False)
     commands_embed.set_footer(text="Стандарт квалификации: K/D 1.00 • Division и Pro освобождены")
     await commands_channel.send(embed=commands_embed)
     dashboard = await text(start, "📊・дашборд")
@@ -1397,6 +1418,29 @@ async def profile(interaction:discord.Interaction,member:discord.Member=None): a
 @bot.tree.command(name="set_game_id",description="Сохранить игровой ID")
 @app_commands.check(command_channel_access)
 async def set_game_id(interaction:discord.Interaction): await interaction.response.send_modal(GameIdModal())
+
+
+@bot.tree.command(name="set_nickname",description="Изменить ник участника на сервере")
+@app_commands.default_permissions(manage_nicknames=True)
+@app_commands.check(command_channel_access)
+@app_commands.describe(member="Участник",nickname="Новый ник на сервере")
+async def set_nickname(interaction:discord.Interaction,member:discord.Member,nickname:str):
+    if not can_administer(interaction.user):
+        return await interaction.response.send_message("Команда доступна только владельцу и администрации SEOR.",ephemeral=True)
+    nickname=nickname.strip()
+    if not 2 <= len(nickname) <= 32:
+        return await interaction.response.send_message("Ник должен содержать от 2 до 32 символов.",ephemeral=True)
+    if member.id==interaction.guild.owner_id:
+        return await interaction.response.send_message("Discord не разрешает боту менять ник владельца сервера.",ephemeral=True)
+    try:
+        await member.edit(nick=nickname,reason=f"SEOR /set_nickname by {interaction.user}")
+    except discord.Forbidden:
+        return await interaction.response.send_message("Не удалось изменить ник. Подними роль бота выше роли этого участника и выдай право **Manage Nicknames**.",ephemeral=True)
+    except discord.HTTPException:
+        return await interaction.response.send_message("Discord не принял новый ник. Проверь символы и попробуй ещё раз.",ephemeral=True)
+    db.set_nickname(interaction.guild_id,member.id,nickname)
+    await send_staff_log(interaction.guild,"общий-журнал","✏️ Изменён ник участника",f"Участник: {member.mention}\nНовый ник: **{nickname}**\nИзменил: {interaction.user.mention}",discord.Color.blue())
+    await interaction.response.send_message(f"✅ Ник участника {member.mention} изменён на **{nickname}**.",ephemeral=True)
 
 
 @bot.tree.command(name="result",description="Отправить результат матча")

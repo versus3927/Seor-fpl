@@ -11,13 +11,14 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 ROOT = Path(__file__).resolve().parent
 CACHE = Path("data/profile_art")
 LOGO = ROOT / "assets" / "seor_logo.png"
-W, H = 1536, 1024
+W, H = 1080, 1600
 WHITE = (242, 243, 248)
 MUTED = (165, 168, 184)
 
 
 def _font(size, bold=False):
     paths = [
+        str(ROOT / "assets" / "fonts" / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
     ]
@@ -174,160 +175,83 @@ def _map_rows(recent, user_id):
 
 
 def _compose(player, display_name, avatar_url, recent, art_path):
-    avatar = _avatar(avatar_url)
-    primary, secondary = _avatar_palette(avatar)
-
-    # The whole theme is derived from the member avatar: blurred backdrop,
-    # accent borders, progress bars and result colors all use its palette.
-    if avatar:
-        backdrop = _cover(avatar, (W, H)).filter(ImageFilter.GaussianBlur(56))
-        backdrop = Image.blend(backdrop, Image.new("RGB", (W, H), _mix((3, 4, 9), primary, 0.13)), 0.76)
-    else:
-        backdrop = _fallback_art(str(player["user_id"]), primary, secondary)
-    canvas = backdrop.convert("RGBA")
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    draw.rectangle((0, 0, W, H), fill=(2, 3, 8, 188))
-
-    # Avatar-colored ambient glows and restrained geometric accents.
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow, "RGBA")
-    gd.ellipse((-260, -300, 720, 620), fill=(*primary, 58))
-    gd.ellipse((1030, 580, 1780, 1280), fill=(*secondary, 42))
-    glow = glow.filter(ImageFilter.GaussianBlur(105))
-    canvas.alpha_composite(glow)
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    for offset in range(-120, 1700, 230):
-        draw.polygon([(offset, 0), (offset + 90, 0), (offset - 170, 250), (offset - 230, 250)], fill=(*primary, 11))
-
-    league, league_color = _league(player["points"])
-    short_number = str(player["user_id"])[-5:]
-    kills = int(player.get("kills", 0))
-    deaths = int(player.get("deaths", 0))
-    games = int(player.get("games", 0))
-    wins = int(player.get("wins", 0))
-    losses = int(player.get("losses", max(0, games - wins)))
-    assists = int(player.get("assists", 0))
-    mvp = int(player.get("mvp", 0))
-    kd = kills / max(1, deaths)
-    winrate = wins / max(1, games)
-    avg = kills / max(1, games)
-
-    # Header: the requested clear separation between member, ID, league and ELO.
-    _panel(draw, (30, 28, 1506, 218), primary, radius=28, alpha=232)
-    if avatar:
-        _paste_round(canvas, avatar, (52, 49, 210, 197), 28)
-    else:
-        draw.rounded_rectangle((52, 49, 210, 197), radius=28, fill=(*primary, 70))
-        _text(draw, (131, 123), display_name[:1].upper(), 64, WHITE, True, "mm")
-    draw.rounded_rectangle((49, 46, 213, 200), radius=31, outline=(*primary, 255), width=4)
-
-    header_cards = [
-        ((238, 49, 565, 197), "УЧАСТНИК", display_name[:20], f"Профиль #{short_number}", primary),
-        ((583, 49, 890, 197), "STANDOFF 2 ID", player.get("game_id") or "НЕ УКАЗАН", "Игровой аккаунт", secondary),
-        ((908, 49, 1213, 197), "ЛИГА", league, "Текущий дивизион", league_color),
-        ((1231, 49, 1483, 197), "ELO", str(player["points"]), "Рейтинг игрока", primary),
-    ]
-    for box, label, value, note, accent in header_cards:
-        x1, y1, x2, y2 = box
-        draw.rounded_rectangle(box, radius=18, fill=(17, 18, 28, 218), outline=(*accent, 110), width=2)
-        draw.rectangle((x1, y1 + 14, x1 + 5, y2 - 14), fill=(*accent, 240))
-        _text(draw, (x1 + 22, y1 + 19), label, 16, MUTED, True)
-        value_size = 34 if label == "УЧАСТНИК" else 29 if label == "STANDOFF 2 ID" else 23 if label == "ЛИГА" else 31
-        _text(draw, (x1 + 22, y1 + 53), value, value_size, WHITE if label != "ЛИГА" else accent, True)
-        _text(draw, (x1 + 22, y2 - 31), note, 15, MUTED)
-
-    if LOGO.exists():
-        logo = _cover(Image.open(LOGO), (112, 112)).convert("RGBA")
-        logo.putalpha(45)
-        canvas.alpha_composite(logo, (1380, 724))
-
-    # Main performance area.
-    _panel(draw, (30, 240, 1018, 680), primary)
-    _text(draw, (62, 270), "ОБЩАЯ СТАТИСТИКА", 27, WHITE, True)
-    _text(draw, (62, 307), "Все подтверждённые матчи SEOR FACEIT", 16, MUTED)
-
-    donut_box = (70, 350, 260, 540)
-    draw.ellipse(donut_box, outline=(67, 69, 85, 220), width=18)
-    kd_ratio = min(1, kd / 2.0)
-    draw.arc(donut_box, -90, -90 + 360 * kd_ratio, fill=primary, width=18)
-    draw.arc(donut_box, -90 + 360 * kd_ratio, 270, fill=secondary, width=18)
-    _text(draw, (165, 434), f"{kd:.2f}", 43, WHITE, True, "mm")
-    _text(draw, (165, 478), "K / D", 17, MUTED, True, "mm")
-    _text(draw, (69, 568), f"K {kills}", 18, primary, True)
-    _text(draw, (180, 568), f"D {deaths}", 18, secondary, True)
-
-    metric_cards = [
-        ("МАТЧИ", games, min(1, games / 50)),
-        ("ПОБЕДЫ", wins, winrate),
-        ("WIN RATE", f"{winrate * 100:.0f}%", winrate),
-        ("AVG KILLS", f"{avg:.1f}", min(1, avg / 25)),
-        ("ASSISTS", assists, min(1, assists / max(1, games * 8))),
-        ("MVP", mvp, min(1, mvp / max(1, games))),
-    ]
-    for index, (label, value, ratio) in enumerate(metric_cards):
-        col, row = index % 3, index // 3
-        x, y = 300 + col * 226, 350 + row * 133
-        draw.rounded_rectangle((x, y, x + 205, y + 112), radius=15, fill=(27, 28, 40, 228), outline=(*primary, 55), width=1)
-        _text(draw, (x + 17, y + 16), label, 15, MUTED, True)
-        _text(draw, (x + 188, y + 39), value, 31, WHITE, True, "ra")
-        _progress(draw, (x + 17, y + 86, x + 188, y + 94), ratio, primary, secondary)
-
-    # Right: league progress and recent match form.
-    _panel(draw, (1038, 240, 1506, 430), primary)
-    _text(draw, (1070, 270), "ПРОГРЕСС ЛИГИ", 22, WHITE, True)
-    thresholds = [(1000, "DEFAULT"), (1150, "QUALIFICATIONS"), (1350, "DIVISION"), (1600, "PRO")]
-    next_item = next(((value, name) for value, name in thresholds if player["points"] < value), None)
-    if next_item:
-        target, next_name = next_item
-        lower = max((value for value, _ in thresholds if value <= player["points"]), default=900)
-        ratio = (player["points"] - lower) / max(1, target - lower)
-        _text(draw, (1070, 310), league, 29, league_color, True)
-        _text(draw, (1472, 314), f"ДО {next_name}", 15, MUTED, True, "ra")
-        _progress(draw, (1070, 365, 1472, 378), ratio, primary, secondary)
-        _text(draw, (1070, 393), player["points"], 16, primary, True)
-        _text(draw, (1472, 393), target, 16, MUTED, True, "ra")
-    else:
-        _text(draw, (1070, 320), "PRO LEAGUE", 36, league_color, True)
-        _text(draw, (1070, 372), "Максимальный дивизион", 17, MUTED)
-
-    _panel(draw, (1038, 450, 1506, 680), primary)
-    _text(draw, (1070, 479), "ПОСЛЕДНИЕ МАТЧИ", 22, WHITE, True)
-    results = [_match_result(match, player["user_id"]) for match in recent[:20]]
-    results = [result for result in results if result]
-    for index in range(20):
-        col, row = index % 5, index // 5
-        x, y = 1070 + col * 80, 526 + row * 38
-        result = results[index] if index < len(results) else ""
-        accent = (70, 190, 125) if result == "W" else (229, 100, 88) if result == "L" else (59, 61, 75)
-        draw.rounded_rectangle((x, y, x + 62, y + 29), radius=7, fill=(25, 26, 37, 235), outline=(*accent, 220), width=2)
-        if result:
-            _text(draw, (x + 31, y + 14), result, 15, WHITE, True, "mm")
-
-    # Bottom map section, matching the segmented reference while staying compact.
-    _panel(draw, (30, 700, 1506, 994), primary)
-    _text(draw, (62, 730), "СТАТИСТИКА ПО КАРТАМ", 25, WHITE, True)
-    map_rows = _map_rows(recent, player["user_id"])
-    for index, (name, map_wins, map_losses) in enumerate(map_rows):
-        x = 62 + index * 204
-        y = 782
-        width = 184
-        total = map_wins + map_losses
-        map_wr = map_wins / max(1, total)
-        draw.rounded_rectangle((x, y, x + width, y + 170), radius=16, fill=(25, 26, 38, 232), outline=(*primary, 58), width=1)
-        draw.rounded_rectangle((x + 14, y + 14, x + 54, y + 54), radius=10, fill=(*primary, 42), outline=(*primary, 120), width=1)
-        _text(draw, (x + 34, y + 34), name[:1], 20, WHITE, True, "mm")
-        _text(draw, (x + 66, y + 19), name.upper(), 15, WHITE, True)
-        _text(draw, (x + 66, y + 43), f"{total} матч.", 13, MUTED)
-        _text(draw, (x + 16, y + 77), f"{map_wins}W", 23, primary, True)
-        _text(draw, (x + 92, y + 77), f"{map_losses}L", 23, secondary, True)
-        _progress(draw, (x + 16, y + 119, x + width - 16, y + 128), map_wr, primary, secondary)
-        _text(draw, (x + 16, y + 139), f"WR {map_wr * 100:.0f}%", 15, MUTED, True)
-
-    _text(draw, (1474, 972), "SEOR FACEIT", 14, (*primary, 210), True, "ra")
-    out = io.BytesIO()
-    canvas.convert("RGB").save(out, "PNG", quality=95)
-    out.seek(0)
-    return out
+    avatar=_avatar(avatar_url); primary,secondary=_avatar_palette(avatar)
+    bg=_cover(avatar,(W,H)).filter(ImageFilter.GaussianBlur(72)) if avatar else _fallback_art(str(player["user_id"]),primary,secondary)
+    canvas=bg.convert("RGBA"); draw=ImageDraw.Draw(canvas,"RGBA")
+    draw.rectangle((0,0,W,H),fill=(3,4,10,205))
+    # Neon shards and 3D depth layers.
+    for i in range(-200,1300,190):
+        draw.polygon([(i,0),(i+90,0),(i-120,290),(i-180,290)],fill=(*primary,38))
+        draw.polygon([(i+18,0),(i+55,0),(i-145,290),(i-175,290)],fill=(*secondary,24))
+    def card(box,accent=primary,r=24):
+        x1,y1,x2,y2=box
+        draw.rounded_rectangle((x1+10,y1+14,x2+10,y2+14),radius=r,fill=(0,0,0,125))
+        draw.rounded_rectangle(box,radius=r,fill=(15,16,27,235),outline=(*accent,175),width=2)
+        draw.line((x1+24,y1+3,x2-24,y1+3),fill=(*_mix(accent,(255,255,255),.35),180),width=3)
+    league,league_color=_league(player["points"])
+    games=int(player.get('games',0)); wins=int(player.get('wins',0)); losses=int(player.get('losses',max(0,games-wins)))
+    kills=int(player.get('kills',0)); deaths=int(player.get('deaths',0)); assists=int(player.get('assists',0)); mvp=int(player.get('mvp',0))
+    kd=kills/max(1,deaths); wr=wins/max(1,games); avg=kills/max(1,games)
+    # Hero.
+    card((32,34,1048,310),primary,30)
+    if avatar: _paste_round(canvas,avatar,(62,68,278,278),34)
+    draw.rounded_rectangle((58,64,282,282),radius=38,outline=(*primary,255),width=6)
+    _text(draw,(320,70),"ПРОФИЛЬ УЧАСТНИКА",23,MUTED,True)
+    _text(draw,(320,108),display_name[:19],58,WHITE,True)
+    _text(draw,(320,185),f"#{str(player['user_id'])[-5:]}",25,primary,True)
+    _text(draw,(320,230),"SEOR FACEIT",22,MUTED,True)
+    # 3D league badge.
+    cx,cy=910,170
+    for rad,col,off in [(92,(0,0,0),14),(86,primary,8),(76,league_color,2),(62,(15,16,26),0)]:
+        pts=[(cx+rad*__import__('math').cos(__import__('math').radians(60*k-30)),cy+off+rad*__import__('math').sin(__import__('math').radians(60*k-30))) for k in range(6)]
+        draw.polygon(pts,fill=(*col,235) if col!=(0,0,0) else (0,0,0,130),outline=(*_mix(col,(255,255,255),.25),255) if col!=(0,0,0) else None)
+    _text(draw,(cx,cy-5),str(max(1,min(10,1+max(0,player['points']-900)//120))),52,WHITE,True,"mm")
+    _text(draw,(cx,cy+52),"LVL",17,MUTED,True,"mm")
+    # Separate identity sections.
+    info=[("УЧАСТНИК",display_name[:16],primary),("STANDOFF 2 ID",player.get('game_id') or 'НЕ УКАЗАН',secondary),("ЛИГА",league,league_color)]
+    for i,(label,value,accent) in enumerate(info):
+        x=32+i*340; card((x,340,x+322,475),accent,20)
+        _text(draw,(x+22,362),label,19,MUTED,True)
+        size=31 if label!='ЛИГА' else 25
+        _text(draw,(x+22,407),value,size,accent if label=='ЛИГА' else WHITE,True)
+    # Rating and performance.
+    card((32,505,1048,895),primary,28)
+    _text(draw,(64,535),"СТАТИСТИКА",34,WHITE,True)
+    _text(draw,(64,580),"Подтверждённые матчи и рейтинг",19,MUTED)
+    box=(75,635,285,845); draw.ellipse(box,outline=(65,67,83,230),width=20)
+    draw.arc(box,-90,-90+360*min(1,kd/2),fill=primary,width=20)
+    draw.arc(box,-90+360*min(1,kd/2),270,fill=secondary,width=20)
+    _text(draw,(180,730),f"{kd:.2f}",48,WHITE,True,"mm"); _text(draw,(180,782),"K / D",20,MUTED,True,"mm")
+    metrics=[('ELO',player['points']),('МАТЧИ',games),('ПОБЕДЫ',wins),('WIN RATE',f'{wr*100:.0f}%'),('AVG',f'{avg:.1f}'),('MVP',mvp),('KILLS',kills),('ASSISTS',assists)]
+    for i,(label,val) in enumerate(metrics):
+        col=i%4; row=i//4; x=325+col*174; y=630+row*120
+        draw.rounded_rectangle((x,y,x+156,y+100),radius=15,fill=(30,31,45,238),outline=(*primary,65),width=1)
+        _text(draw,(x+14,y+14),label,16,MUTED,True); _text(draw,(x+142,y+48),val,30,WHITE,True,'ra')
+        _progress(draw,(x+14,y+81,x+142,y+88),min(1,float(val.strip('%'))/100) if isinstance(val,str) and val.endswith('%') else min(1,(i+2)/10),primary,secondary)
+    # League progress.
+    card((32,925,1048,1075),league_color,24)
+    _text(draw,(64,952),"ПРОГРЕСС ЛИГИ",23,MUTED,True); _text(draw,(64,990),league,34,league_color,True)
+    targets=[(1150,'QUALIFICATIONS'),(1350,'DIVISION'),(1600,'PRO')]; nxt=next(((v,n) for v,n in targets if player['points']<v),None)
+    target=nxt[0] if nxt else 1600; lower=max([900]+[v for v,_ in targets if v<=player['points']]); ratio=1 if not nxt else (player['points']-lower)/max(1,target-lower)
+    _progress(draw,(545,975,1005,991),ratio,primary,secondary); _text(draw,(545,1010),player['points'],19,primary,True); _text(draw,(1005,1010),target,19,MUTED,True,'ra')
+    # Recent matches.
+    card((32,1105,1048,1265),primary,24); _text(draw,(64,1132),"ПОСЛЕДНИЕ МАТЧИ",26,WHITE,True)
+    results=[_match_result(m,player['user_id']) for m in recent[:12]]; results=[x for x in results if x]
+    for i in range(12):
+        x=64+i*80; r=results[i] if i<len(results) else ''; col=(70,190,125) if r=='W' else (229,100,88) if r=='L' else (60,62,78)
+        draw.rounded_rectangle((x,1182,x+61,1228),radius=10,fill=(25,26,38,240),outline=(*col,240),width=3)
+        if r:_text(draw,(x+30,1204),r,22,WHITE,True,'mm')
+    # Maps: large two-column cards.
+    _text(draw,(40,1302),"КАРТЫ",30,WHITE,True)
+    rows=_map_rows(recent,player['user_id'])
+    for i,(name,mw,ml) in enumerate(rows):
+        col=i%2; row=i//2; x=32+col*516; y=1345+row*62
+        draw.rounded_rectangle((x,y,x+498,y+50),radius=12,fill=(23,24,36,238),outline=(*primary,70),width=1)
+        total=mw+ml; mapwr=mw/max(1,total)
+        _text(draw,(x+16,y+13),name.upper(),18,WHITE,True); _text(draw,(x+245,y+13),f"{mw}W  {ml}L",18,primary,True)
+        _text(draw,(x+472,y+13),f"WR {mapwr*100:.0f}%",18,MUTED,True,'ra')
+    _text(draw,(1038,1580),"SEOR FACEIT",16,(*primary,220),True,'ra')
+    out=io.BytesIO(); canvas.convert('RGB').save(out,'PNG',quality=95); out.seek(0); return out
 
 def build_profile_card_sync(player, display_name, avatar_url, recent):
     CACHE.mkdir(parents=True, exist_ok=True)

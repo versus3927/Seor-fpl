@@ -79,6 +79,41 @@ EXTRA_ROLE_SPECS = {
 }
 ROLE_PANEL_EXTRAS=("developer","director","head_admin","ticket_admin","head_ac","games_admin","anticheat","moderator","content_creator","streamer","sponsor","pro_lead","premium")
 
+# Разовый перенос ролей со скриншотов старого сервера.
+LAUNCH_ROLE_MEMBERS = {
+    "league_division": {
+        "conexxion0", "betrid", "birox444", "celocesd", "dissww", "gersachw",
+        "hoollywood17", "hyko_zxc", "lanny122", "xanax_suicide", "tombaura",
+        "r0g0ff", "pomidor0439", "gkv2213", "slizerry", "zilinl756",
+        "versus2739", "koyen0692", "ono216", "whitemoon1337", "younai007",
+        "wyrthless_1",
+    },
+    "league_pro": {
+        "conexxion0", "birox444", "dissww", "hyko_zxc", "lanny122",
+        "poanching", "versus2739", "koyen0692",
+    },
+    "test_division": {
+        "noneattack88", "x1mk0", "apgxht", "vilent.", "trynexz2", "4shorty7",
+        "ebanat67.", "koyen0692",
+    },
+    "curator_division": {
+        "versus2739", "koyen0692", "ono216", "whitemoon1337",
+    },
+    "league_qualifications": {
+        "fa1l_hello", "conexxion0", "sblnmazatishki", "summerdayy", "liublumaslo",
+        "betrid", "birox444", "celocesd", "w1yterr.", "crouch0", "deruss23",
+        "dissww", "dyhace228", "noneattack88", "exty73", "zex06607", "gersachw",
+        "x1mk0", "gv3nt", "hoollywood17", "apgxht", "vilent.", "lever.uu",
+        "hyko_zxc", "wtfinferno", "itso23_78155", "lanny122", "lepewsan",
+        "poanching", "xanax_suicide", "bsbsbdbdbjdjdjo", "trynexz2", "paraannual.",
+        "tombaura", "r0g0ff", "4shorty7", "lodzyyoc32", "gkv2213", "oxjii",
+        "slizerry", "morti699_87849", "stayits", "headshot0379_73668", "ebanat67.",
+        "versus2739", "koyen0692", "ono216", "wendyiosik", "wht2312",
+        "whitemoon1337", "why.www", "younai007", "wyrthless_1",
+        "pswonderfull_45644",
+    },
+}
+
 intents = discord.Intents.default()
 intents.members = True
 intents.voice_states = True
@@ -122,14 +157,71 @@ def can_administer(member):
     return can_manage_staff(member) or any(has_role(member,name) for name in operational)
 
 
+def is_staff_member(member):
+    """Стафф, которому доступны warn и timeout через админ-панель."""
+    staff_names = set(STAFF_ROLES.values()) | {
+        EXTRA_ROLE_SPECS[key][0] for key in (
+            "developer", "director", "head_admin", "ticket_admin", "head_ac",
+            "games_admin", "anticheat", "moderator", "pro_lead",
+        )
+    }
+    return member.id == member.guild.owner_id or any(has_role(member, name) for name in staff_names)
+
+
+def is_developer(member):
+    return has_role(member, EXTRA_ROLE_SPECS["developer"][0])
+
+
 def curator_league(member):
     for league in ("qualifications","division","pro"):
         if has_role(member,STAFF_ROLES[f"curator_{league}"]): return league
     return None
 
 
+def role_panel_keys():
+    """Все роли, которыми можно управлять через панель."""
+    return set(STAFF_ROLES) | {f"league_{key}" for key in LEAGUE_ROLES} | set(ROLE_PANEL_EXTRAS)
+
+
+def allowed_role_keys(member):
+    """Роли, которые участник может выдавать и снимать по иерархии SEOR."""
+    all_roles = role_panel_keys()
+
+    # Владелец Discord-сервера, Owner, General Manager, Developer и Head Admin.
+    full_access_roles = (
+        STAFF_ROLES["owner"],
+        EXTRA_ROLE_SPECS["director"][0],
+        EXTRA_ROLE_SPECS["developer"][0],
+        EXTRA_ROLE_SPECS["head_admin"][0],
+    )
+    if member.id == member.guild.owner_id or any(has_role(member, name) for name in full_access_roles):
+        return all_roles
+
+    league_all = {"league_qualifications", "league_division", "league_pro"}
+    if has_role(member, STAFF_ROLES["admin"]):
+        return {"moderator", "anticheat", "games_admin", "ticket_admin"} | league_all
+    if has_role(member, EXTRA_ROLE_SPECS["ticket_admin"][0]):
+        return {"moderator", "anticheat"} | league_all
+    if has_role(member, EXTRA_ROLE_SPECS["games_admin"][0]):
+        return {"moderator", "anticheat", "league_qualifications", "league_division"}
+    if has_role(member, EXTRA_ROLE_SPECS["head_ac"][0]):
+        return {"moderator", "anticheat"} | league_all
+    if has_role(member, EXTRA_ROLE_SPECS["pro_lead"][0]):
+        return {
+            "league_qualifications", "league_division", "league_pro",
+            "curator_qualifications", "curator_division", "curator_pro",
+        }
+    if has_role(member, STAFF_ROLES["curator_pro"]):
+        return league_all
+    if has_role(member, STAFF_ROLES["curator_division"]):
+        return {"league_qualifications", "league_division"}
+    if has_role(member, STAFF_ROLES["curator_qualifications"]):
+        return {"league_qualifications"}
+    return set()
+
+
 def can_use_role_panel(member):
-    return can_manage_staff(member) or curator_league(member) is not None
+    return bool(allowed_role_keys(member))
 
 
 async def command_channel_access(interaction):
@@ -709,8 +801,8 @@ class DashboardPanelView(discord.ui.View):
 
     async def role_panel(self,i):
         if not can_use_role_panel(i.user):
-            return await i.response.send_message("Управлять ролями могут Owner и кураторы лиг.",ephemeral=True)
-        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Куратор может управлять только ролью своей лиги.",color=color()),view=RolePanelView(),ephemeral=True)
+            return await i.response.send_message("У тебя нет доступа к управлению ролями.",ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступные действия ограничены иерархией персонала.",color=color()),view=RolePanelView(),ephemeral=True)
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
@@ -749,12 +841,8 @@ class RolePanelView(discord.ui.View):
             await interaction.response.send_message("Недостаточно прав.",ephemeral=True); return None,None
         if not self.target_id or not self.role_key:
             await interaction.response.send_message("Сначала выбери участника и роль.",ephemeral=True); return None,None
-        if (self.role_key in STAFF_ROLES or self.role_key in EXTRA_ROLE_SPECS) and not can_manage_staff(interaction.user):
-            await interaction.response.send_message("Служебные роли Owner/Admin/Curator может выдавать только владелец или Owner.",ephemeral=True); return None,None
-        if self.role_key.startswith("league_"):
-            target_league=self.role_key.removeprefix("league_")
-            if not can_manage_staff(interaction.user) and curator_league(interaction.user)!=target_league:
-                await interaction.response.send_message("Куратор может выдавать и снимать только роль своей лиги.",ephemeral=True); return None,None
+        if self.role_key not in allowed_role_keys(interaction.user):
+            await interaction.response.send_message("По иерархии персонала ты не можешь выдавать или снимать эту роль.",ephemeral=True); return None,None
         member=interaction.guild.get_member(self.target_id)
         roles=await ensure_staff_roles(interaction.guild)
         return member,roles.get(self.role_key)
@@ -834,11 +922,13 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
     duration=discord.ui.TextInput(label="Минуты для timeout",placeholder="Например: 60",required=False,max_length=6)
     reason=discord.ui.TextInput(label="Причина",style=discord.TextStyle.paragraph,max_length=500)
     async def on_submit(self,interaction):
-        if not can_administer(interaction.user): return await interaction.response.send_message("Нет доступа.",ephemeral=True)
+        if not is_staff_member(interaction.user): return await interaction.response.send_message("Нет доступа.",ephemeral=True)
         try: member=interaction.guild.get_member(int(str(self.user_id).strip()))
         except ValueError: member=None
         if not member: return await interaction.response.send_message("Участник не найден.",ephemeral=True)
         action=str(self.action).strip().lower(); reason=str(self.reason).strip()
+        if action not in {"warn", "предупреждение", "timeout"} and not can_administer(interaction.user):
+            return await interaction.response.send_message("Все стафф-роли могут выдавать только `warn` и `timeout`. Kick и ban доступны старшей администрации.",ephemeral=True)
         try:
             if action in {"warn","предупреждение"}:
                 try: await member.send(f"⚠️ Предупреждение на **{interaction.guild.name}**: {reason}")
@@ -897,7 +987,9 @@ class StaffControlView(discord.ui.View):
         await i.response.send_message("Нет доступа к панели штаба.",ephemeral=True); return False
     @discord.ui.button(label="Санкции",emoji="⚖️",style=discord.ButtonStyle.danger,custom_id="staff:sanction",row=0)
     async def sanctions(self,i,b):
-        if await self.allowed(i): await i.response.send_modal(SanctionModal())
+        if not is_staff_member(i.user):
+            return await i.response.send_message("Нет доступа к санкциям.",ephemeral=True)
+        await i.response.send_modal(SanctionModal())
     @discord.ui.button(label="Роли",emoji="🛡️",style=discord.ButtonStyle.primary,custom_id="staff:roles",row=0)
     async def roles(self,i,b):
         if await self.allowed(i): await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль.",color=color()),view=RolePanelView(),ephemeral=True)
@@ -1617,7 +1709,11 @@ async def setup(interaction:discord.Interaction):
                     await league_channel.set_permissions(registered_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
 
     admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True),staff_roles["owner"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),staff_roles["admin"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
-    for staff_key in ("developer","director","head_admin","ticket_admin","head_ac","games_admin","anticheat","moderator"):
+    for staff_key in (
+        "developer", "director", "head_admin", "ticket_admin", "head_ac",
+        "games_admin", "anticheat", "moderator", "pro_lead",
+        "curator_qualifications", "curator_division", "curator_pro",
+    ):
         admin_overwrites[staff_roles[staff_key]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
     admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
     for target,overwrite in admin_overwrites.items(): await admin.set_permissions(target,overwrite=overwrite)
@@ -1697,6 +1793,105 @@ async def roles_setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     roles=await ensure_staff_roles(interaction.guild)
     await interaction.followup.send("Роли готовы: "+", ".join(role.mention for role in roles.values()),ephemeral=True)
+
+
+@bot.tree.command(name="strip_all_roles",description="Снять роли со всех участников, кроме Owner и Developer")
+@app_commands.default_permissions(administrator=True)
+@app_commands.check(command_channel_access)
+@app_commands.describe(confirm="Для подтверждения введи CONFIRM")
+async def strip_all_roles(interaction:discord.Interaction,confirm:str):
+    if not is_developer(interaction.user):
+        return await interaction.response.send_message("Команда доступна только участникам с ролью Developer.",ephemeral=True)
+    if confirm.strip().upper() != "CONFIRM":
+        return await interaction.response.send_message("Операция отменена. Для запуска команды введи `CONFIRM`.",ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    owner_role_name=STAFF_ROLES["owner"]
+    developer_role_name=EXTRA_ROLE_SPECS["developer"][0]
+    changed=0; skipped=0; failed=0; removed_count=0
+
+    for member in interaction.guild.members:
+        if member.bot or member.id == interaction.guild.owner_id or has_role(member,owner_role_name) or has_role(member,developer_role_name):
+            skipped += 1
+            continue
+        removable=[role for role in member.roles if not role.is_default() and not role.managed and role < interaction.guild.me.top_role]
+        if not removable:
+            continue
+        try:
+            await member.remove_roles(*removable,reason=f"SEOR mass role reset by {interaction.user}")
+            changed += 1; removed_count += len(removable)
+        except (discord.Forbidden,discord.HTTPException):
+            failed += 1
+
+    await send_staff_log(
+        interaction.guild,"общий-журнал","🧹 Массовое снятие ролей",
+        f"Запустил: {interaction.user.mention}\nОбработано участников: **{changed}**\nСнято ролей: **{removed_count}**\nПропущено защищённых/ботов: **{skipped}**\nОшибок: **{failed}**",
+        discord.Color.red(),
+    )
+    await interaction.followup.send(
+        f"Готово. Роли сняты у **{changed}** участников (всего ролей: **{removed_count}**). "
+        f"Owner, Developer, владелец сервера и боты пропущены. Ошибок: **{failed}**.",ephemeral=True,
+    )
+
+
+@bot.tree.command(name="restore_launch_roles",description="Разово восстановить роли участников со скриншотов")
+@app_commands.default_permissions(administrator=True)
+@app_commands.check(command_channel_access)
+@app_commands.describe(confirm="Для подтверждения введи CONFIRM")
+async def restore_launch_roles(interaction:discord.Interaction,confirm:str):
+    if not is_developer(interaction.user):
+        return await interaction.response.send_message("Команда доступна только участникам с ролью Developer.",ephemeral=True)
+    if confirm.strip().upper() != "CONFIRM":
+        return await interaction.response.send_message("Операция отменена. Для запуска команды введи `CONFIRM`.",ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    try:
+        await interaction.guild.chunk(cache=True)
+    except discord.HTTPException:
+        pass
+
+    roles=await ensure_staff_roles(interaction.guild)
+    members_by_name={member.name.casefold():member for member in interaction.guild.members if not member.bot}
+    expected=set().union(*LAUNCH_ROLE_MEMBERS.values())
+    found=set(); changed_members=0; added_roles=0; failed=[]
+
+    for username in sorted(expected):
+        member=members_by_name.get(username.casefold())
+        if not member:
+            continue
+        found.add(username)
+        desired=[]
+        for role_key,usernames in LAUNCH_ROLE_MEMBERS.items():
+            if username in usernames:
+                role=roles.get(role_key)
+                if role and role not in member.roles:
+                    desired.append(role)
+        if not desired:
+            continue
+        try:
+            await member.add_roles(*desired,reason=f"SEOR launch role restore by {interaction.user}")
+            changed_members += 1; added_roles += len(desired)
+        except (discord.Forbidden,discord.HTTPException):
+            failed.append(username)
+
+    missing=sorted(expected-found)
+    details=""
+    if missing:
+        details="\n\nНе найдены на сервере:\n`"+"`, `".join(missing)+"`"
+    if failed:
+        details+="\n\nНе удалось выдать роли:\n`"+"`, `".join(failed)+"`"
+    if len(details)>1300:
+        details=details[:1300]+"…"
+
+    await send_staff_log(
+        interaction.guild,"общий-журнал","📥 Восстановлены стартовые роли",
+        f"Запустил: {interaction.user.mention}\nНайдено участников: **{len(found)}/{len(expected)}**\nИзменено участников: **{changed_members}**\nВыдано ролей: **{added_roles}**\nОшибок: **{len(failed)}**",
+        discord.Color.green(),
+    )
+    await interaction.followup.send(
+        f"Готово. Найдено **{len(found)}/{len(expected)}** участников, изменено **{changed_members}**, выдано ролей **{added_roles}**.{details}",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="profile",description="Показать игровой профиль")

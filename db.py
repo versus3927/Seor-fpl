@@ -20,7 +20,7 @@ def init_db():
         con.executescript("""
         CREATE TABLE IF NOT EXISTS players(
           guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-          game_id TEXT, games INTEGER NOT NULL DEFAULT 0,
+          game_id TEXT, nickname TEXT, games INTEGER NOT NULL DEFAULT 0,
           wins INTEGER NOT NULL DEFAULT 0, losses INTEGER NOT NULL DEFAULT 0,
           kills INTEGER NOT NULL DEFAULT 0, deaths INTEGER NOT NULL DEFAULT 0,
           assists INTEGER NOT NULL DEFAULT 0, mvp INTEGER NOT NULL DEFAULT 0,
@@ -44,6 +44,7 @@ def init_db():
         player_columns={row[1] for row in con.execute("PRAGMA table_info(players)")}
         if "assists" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN assists INTEGER NOT NULL DEFAULT 0")
         if "mvp" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN mvp INTEGER NOT NULL DEFAULT 0")
+        if "nickname" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN nickname TEXT")
         submission_columns={row[1] for row in con.execute("PRAGMA table_info(result_submissions)")}
         if "analysis_json" not in submission_columns: con.execute("ALTER TABLE result_submissions ADD COLUMN analysis_json TEXT")
 
@@ -55,6 +56,11 @@ def set_game_id(guild_id:int,user_id:int,game_id:str):
     ensure_player(guild_id,user_id)
     with connect() as con:
         con.execute("UPDATE players SET game_id=? WHERE guild_id=? AND user_id=?",(game_id,guild_id,user_id))
+
+def set_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
+    ensure_player(guild_id,user_id)
+    with connect() as con:
+        con.execute("UPDATE players SET nickname=?,game_id=? WHERE guild_id=? AND user_id=?",(nickname,game_id,guild_id,user_id))
 
 def player(guild_id:int,user_id:int):
     ensure_player(guild_id,user_id)

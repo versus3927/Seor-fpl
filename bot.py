@@ -26,7 +26,7 @@ LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
 LEAGUES = {
     "Default": ("⚪", 1000),
-    "Prospect": ("🟢", 1150),
+    "Qualifications": ("🟢", 1150),
     "Division": ("🟣", 1350),
     "Pro": ("🔴", 1600),
 }
@@ -37,12 +37,12 @@ REGISTERED_ROLE_NAME = "зарегистрирован"
 STAFF_ROLES = {
     "owner": "owner",
     "admin": "admin",
-    "curator_prospect": "qualifications curator",
+    "curator_qualifications": "qualifications curator",
     "curator_division": "division curator",
     "curator_pro": "PRO League curator",
 }
 LEAGUE_ROLES = {
-    "prospect": "qualifications League",
+    "qualifications": "qualifications League",
     "division": "division League",
     "pro": "pro League",
 }
@@ -99,7 +99,7 @@ def has_role(member, role_name):
 def player_league(points):
     if points >= 1600: return "Pro"
     if points >= 1350: return "Division"
-    if points >= 1150: return "Prospect"
+    if points >= 1150: return "Qualifications"
     return "Default"
 
 
@@ -120,7 +120,7 @@ def can_administer(member):
 
 
 def curator_league(member):
-    for league in ("prospect","division","pro"):
+    for league in ("qualifications","division","pro"):
         if has_role(member,STAFF_ROLES[f"curator_{league}"]): return league
     return None
 
@@ -166,7 +166,7 @@ async def ensure_staff_roles(guild):
     specs={
         "owner": (discord.Color.gold(), discord.Permissions(administrator=True)),
         "admin": (discord.Color.red(), discord.Permissions(manage_guild=True,manage_channels=True,manage_messages=True,moderate_members=True,move_members=True,mute_members=True)),
-        "curator_prospect": (discord.Color.green(), discord.Permissions(move_members=True,mute_members=True)),
+        "curator_qualifications": (discord.Color.green(), discord.Permissions(move_members=True,mute_members=True)),
         "curator_division": (discord.Color.purple(), discord.Permissions(move_members=True,mute_members=True)),
         "curator_pro": (discord.Color.magenta(), discord.Permissions(move_members=True,mute_members=True)),
     }
@@ -182,7 +182,7 @@ async def ensure_staff_roles(guild):
             try: await role.edit(color=role_color,permissions=permissions,hoist=True,reason="SEOR: синхронизация служебной роли")
             except discord.Forbidden: pass
         result[key]=role
-    league_colors={"prospect":discord.Color.green(),"division":discord.Color.purple(),"pro":discord.Color.red()}
+    league_colors={"qualifications":discord.Color.green(),"division":discord.Color.purple(),"pro":discord.Color.red()}
     for key,name in LEAGUE_ROLES.items():
         role=discord.utils.get(guild.roles,name=name)
         if not role:
@@ -325,27 +325,33 @@ def registration_embed(member=None):
     e=discord.Embed(title="⚡ ДОБРО ПОЖАЛОВАТЬ В SEOR",description=f"{greeting}\n\nДо регистрации тебе доступен только этот раздел. Подтверди игровой профиль — после этого откроются основные каналы сервера.",color=color())
     first_step="Открой канал **📋・регистрация** и нажми **Пройти регистрацию**." if member else "Нажми **Пройти регистрацию** ниже."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
-    e.add_field(name="02  ВВЕДИ GAME ID",value="Укажи числовой ID аккаунта Standoff 2.",inline=False)
+    e.add_field(name="02  ЗАПОЛНИ ПРОФИЛЬ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
     e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роль **{REGISTERED_ROLE_NAME}** и откроет сервер.",inline=False)
     e.set_footer(text="SEOR CYBER • competitive platform")
     return e
 
 
 class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
+    nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Например: Versus", min_length=2, max_length=24)
     game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="Например: 245507174", max_length=30)
     async def on_submit(self, interaction):
         value=str(self.game_id).strip()
+        nickname=str(self.nickname).strip()
         if not value.isdigit() or len(value) < 5:
             return await interaction.response.send_message("Укажи корректный числовой Standoff 2 ID.",ephemeral=True)
-        db.set_game_id(interaction.guild_id,interaction.user.id,value)
+        if len(nickname)<2:
+            return await interaction.response.send_message("Игровой ник должен содержать минимум 2 символа.",ephemeral=True)
+        db.set_registration(interaction.guild_id,interaction.user.id,nickname,value)
+        try: await interaction.user.edit(nick=nickname,reason="SEOR: игровой ник при регистрации")
+        except discord.Forbidden: pass
         role=discord.utils.get(interaction.guild.roles,name=REGISTERED_ROLE_NAME)
         if not role:
             role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
         try:
             await interaction.user.add_roles(role,reason="SEOR: регистрация игрового профиля")
         except discord.Forbidden:
-            return await interaction.response.send_message("ID сохранён, но роль не выдана. Подними роль бота выше роли `зарегистрирован`.",ephemeral=True)
-        await interaction.response.send_message(f"✅ Регистрация завершена. Твой Game ID: **{value}**. Основные каналы сервера открыты.",ephemeral=True)
+            return await interaction.response.send_message("Профиль сохранён, но роль не выдана. Подними роль бота выше роли `зарегистрирован`.",ephemeral=True)
+        await interaction.response.send_message(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}**. Основные каналы сервера открыты.",ephemeral=True)
 
 
 class RegistrationView(discord.ui.View):
@@ -365,7 +371,7 @@ def match_ocr_players(guild,match,analysis):
         player=db.player(guild.id,user_id)
         names=[]
         if member:
-            names=[member.display_name,member.name]
+            names=[player.get("nickname") or member.display_name,member.display_name,member.name]
         candidates.append({"user_id":user_id,"member":member,"game_id":str(player.get("game_id") or ""),"names":names})
     used=set(); matched=[]
     def clean(value): return re.sub(r"[^a-zа-яё0-9]","",str(value).lower())
@@ -403,7 +409,7 @@ def ocr_embed_text(analysis,entered_score):
         lines.append(f"{player} — **{item.get('kills',0)}/{item.get('deaths',0)}/{item.get('assists',0)}**, MVP {item.get('mvp',0)}")
     stats="\n".join(lines) or "Статистика игроков не распознана."
     error=f"\n⚠️ AI: `{analysis['error']}`" if analysis.get("error") else ""
-    return f"Введённый счёт: **{entered_score}**\nРаспознанный счёт: **{detected}**\nКарта: **{analysis.get('map') or 'не распознана'}**\nУверенность: **{analysis.get('confidence',0)*100:.0f}%**{error}\n\n**K/D/A со скриншота:**\n{stats}"
+    return f"Введённый счёт: **{entered_score}**\nРаспознанный счёт: **{detected}**\nКарта: **{analysis.get('map') or 'не распознана'}**\nУвере��ность: **{analysis.get('confidence',0)*100:.0f}%**{error}\n\n**K/D/A со скриншота:**\n{stats}"
 
 
 class ResultSubmitView(discord.ui.View):
@@ -491,7 +497,7 @@ class GameLookupModal(discord.ui.Modal, title="Поиск профил��"):
             return await interaction.response.send_message("Игрок с таким ID не найден.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
         member=interaction.guild.get_member(p["user_id"])
-        name=member.display_name if member else f"Игрок {p['user_id']}"
+        name=p.get("nickname") or (member.display_name if member else f"Игрок {p['user_id']}")
         recent=[]
         for match in db.recent_matches(interaction.guild_id,50):
             ids=set((match["team_a"]+","+match["team_b"]).split(","))
@@ -521,8 +527,8 @@ DASHBOARD_SECTIONS={
     "rating":("🏆","Рейтинг","Таблица лидеров, твой ELO и место на сервере."),
     "matches":("🎮","Матчи","Последние игры, текущий статус и поиск по ID."),
     "party":("👥","Пати","Группа до трёх игроков для совместного подбора."),
-    "account":("⚙️","Аккаунт","Игровой ID и данные регистрации."),
-    "roles":("🛡️","Роли","Создание и выдача служебных ролей проекта."),
+    "account":("⚙️","Акка��нт","Игровой ID и данные регистрации."),
+    "roles":("���️","Роли","Создание и выдача служебных ролей проекта."),
 }
 
 
@@ -615,7 +621,7 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**.",ephemeral=True)
 
     async def norms(self,i):
-        await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\nЛиги по ELO: Default 1000 · Prospect 1150 · Division 1350 · Pro 1600.",ephemeral=True)
+        await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\nЛиги по ELO: Default 1000 · Qualifications 1150 · Division 1350 · Pro 1600.",ephemeral=True)
 
     async def matches(self,i):
         rows=db.recent_matches(i.guild_id,10); text="\n".join(f"`#{m['id']}` · {m['league']} · {m['map']} · {m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}" for m in rows) or "Матчей пока нет."
@@ -752,17 +758,19 @@ class TicketView(discord.ui.View):
         await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
 
 
-class LobbyModal(discord.ui.Modal, title="Ссылка на ��обби"):
-    url = discord.ui.TextInput(label="Ссылка", placeholder="https://...", max_length=300)
+class LobbyIdModal(discord.ui.Modal, title="ID игрового лобби"):
+    lobby_id = discord.ui.TextInput(label="ID лобби", placeholder="Например: 482193", min_length=3, max_length=32)
     def __init__(self, match_id):
         super().__init__(); self.match_id = match_id
     async def on_submit(self, interaction):
-        m = db.match(self.match_id)
-        if not m or interaction.user.id != m["host_id"]:
-            return await interaction.response.send_message("Ссылку может отправить только хост.", ephemeral=True)
-        db.set_lobby(self.match_id, str(self.url))
-        ids = [int(x) for x in (m["team_a"]+","+m["team_b"]).split(",")]
-        await interaction.response.send_message(" ".join(f"<@{x}>" for x in ids)+f"\n🔗 Лобби матча **#{self.match_id}**: {self.url}")
+        m=db.match(self.match_id)
+        if not m or interaction.user.id!=m["host_id"]:
+            return await interaction.response.send_message("ID игрового лобби может указать только хост.",ephemeral=True)
+        value=str(self.lobby_id).strip()
+        if not value or "http://" in value.lower() or "https://" in value.lower():
+            return await interaction.response.send_message("Укажи только ID без ссылки.",ephemeral=True)
+        db.set_lobby(self.match_id,value)
+        await interaction.response.send_message(f"✅ ID игрового лобби сохранён: **{value}**.",ephemeral=True)
 
 
 class ResultModal(discord.ui.Modal, title="Результат матча"):
@@ -790,7 +798,7 @@ async def send_profile(interaction,member=None):
         ids=set((m["team_a"]+","+m["team_b"]).split(","))
         if str(member.id) in ids: recent.append(m)
     avatar_url=member.display_avatar.with_size(256).url
-    card=await build_profile_card(p,member.display_name,str(avatar_url),recent)
+    card=await build_profile_card(p,p.get("nickname") or member.display_name,str(avatar_url),recent)
     view=None
     if member.id==interaction.user.id:
         view=discord.ui.View(timeout=60)
@@ -951,12 +959,11 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
         if m.bot: continue
         try: await m.move_to(vb)
         except discord.HTTPException: pass
-    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\n*Ждём ссылку на лобби от хоста…*",color=color())
+    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\nНажми **Получить ID**. Хост при первом нажатии укажет ID игрового лобби.",color=color())
     e.add_field(name="🛡 CT",value="\n".join(f"• {m.mention}" for m in a))
     e.add_field(name="💣 T",value="\n".join(f"• {m.mention}" for m in b))
     view=discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Отправить ссылку",emoji="🔗",style=discord.ButtonStyle.success,custom_id=f"match:lobby:{match_id}"))
-    view.add_item(discord.ui.Button(label="Отправить результат",emoji="🏁",style=discord.ButtonStyle.primary,custom_id=f"match:result:{match_id}"))
+    view.add_item(discord.ui.Button(label="Получить ID",emoji="🆔",style=discord.ButtonStyle.success,custom_id=f"match:getid:{match_id}"))
     await text.send(content=" ".join(m.mention for m in members),embed=e,view=view)
     await update_queue(lobby)
 
@@ -990,10 +997,18 @@ async def on_member_join(member):
 async def on_interaction(interaction):
     if interaction.type != discord.InteractionType.component: return
     cid=interaction.data.get("custom_id","")
-    if cid.startswith("match:lobby:"):
-        await interaction.response.send_modal(LobbyModal(int(cid.rsplit(":",1)[1])))
-    elif cid.startswith("match:result:"):
-        await interaction.response.send_modal(ResultSubmitModal(int(cid.rsplit(":",1)[1])))
+    if cid.startswith("match:getid:"):
+        match_id=int(cid.rsplit(":",1)[1]); match_data=db.match(match_id)
+        if not match_data:
+            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+        player_ids={int(x) for x in (match_data["team_a"]+","+match_data["team_b"]).split(",") if x}
+        if interaction.user.id not in player_ids and not can_administer(interaction.user):
+            return await interaction.response.send_message("ID доступен только участникам матча.",ephemeral=True)
+        if match_data.get("lobby_url"):
+            return await interaction.response.send_message(f"🆔 ID игрового лобби: **{match_data['lobby_url']}**",ephemeral=True)
+        if interaction.user.id==match_data["host_id"]:
+            return await interaction.response.send_modal(LobbyIdModal(match_id))
+        return await interaction.response.send_message("Хост ещё не указал ID игрового лобби.",ephemeral=True)
     elif cid.startswith("result:approve:") or cid.startswith("result:reject:"):
         submission_id = int(cid.rsplit(":", 1)[1])
         sub = db.submission(submission_id)
@@ -1017,13 +1032,13 @@ async def on_interaction(interaction):
             status, clr = "✅ принят", discord.Color.green()
             history = next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")), None)
             if history:
-                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
+                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый ��чёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
                 e.set_image(url=sub["screenshot_url"])
                 await history.send(embed=e)
         else:
             db.review_submission(submission_id, "rejected", interaction.user.id)
             status, clr = "❌ отклонён", discord.Color.red()
-        await send_staff_log(interaction.guild,"журнал-матчей",f"🎮 Проверка матча #{sub['match_id']}",f"Решение: **{status}**\nМодератор: {interaction.user.mention}\nЗаявка: **#{submission_id}**",clr)
+        await send_staff_log(interaction.guild,"журнал-матчей",f"🎮 Проверка м��тча #{sub['match_id']}",f"Решение: **{status}**\nМодератор: {interaction.user.mention}\nЗаявка: **#{submission_id}**",clr)
         embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         embed.color = clr
         embed.description = (embed.description or "") + f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
@@ -1107,7 +1122,7 @@ async def setup(interaction:discord.Interaction):
 
     # Категории ранних тестовых версий, которые больше не входят в схему.
     legacy_names = {
-        "Prospect 🟢", "Prospect matches", "PROSPECT MATCHES",
+        "Prospect 🟢", "Prospect matches", "PROSPECT MATCHES", "🟢 SEOR PROSPECT",
         "INFORMATION", "comand", "COMMAND", "COMMUNITY",
         "📌 INFO", "▶️ START", "👥 COMMUNITY", "🎫 SUPPORT'S",
         "🎧 ПРИВАТНЫЕ КАНАЛЫ", "📮 SEND RESULT'S", "🛡️ ADMINISTRATION",
@@ -1200,7 +1215,7 @@ async def setup(interaction:discord.Interaction):
     protected_chats={
         "🔴・чат-pro":("league_pro","curator_pro"),
         "🟣・чат-division":("league_division","curator_division"),
-        "🟡・чат-qualifications":("league_prospect","curator_prospect"),
+        "🟡・чат-qualifications":("league_qualifications","curator_qualifications"),
     }
     for channel_name,(league_key,curator_key) in protected_chats.items():
         channel=community_channels[channel_name]
@@ -1211,7 +1226,7 @@ async def setup(interaction:discord.Interaction):
         await channel.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
     curator_chat=community_channels["🛠️・чат-кураторов"]
     await curator_chat.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
-    for curator_key in ("curator_prospect","curator_division","curator_pro"):
+    for curator_key in ("curator_qualifications","curator_division","curator_pro"):
         await curator_chat.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,read_message_history=True)
     await curator_chat.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
     await curator_chat.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
@@ -1223,7 +1238,7 @@ async def setup(interaction:discord.Interaction):
     tickets = await text(support, "🎫・создать-тикет")
     await text(support, "⚠️・наказания")
     if not tickets.last_message_id:
-        e = discord.Embed(title="🎧 ТЕХНИЧЕСКАЯ ПОДДЕРЖКА", description="Спорные результаты, регистрация, баги, жалобы и обжалования. Нажми кнопку — бот создаст приватный канал.", color=color())
+        e = discord.Embed(title="���� ТЕХНИЧЕСКАЯ ПОДДЕРЖКА", description="Спорные результаты, регистрация, баги, жалобы и обжалования. Нажми кнопку — бот создаст приватный канал.", color=color())
         await tickets.send(embed=e, view=TicketView())
 
     for name,(emoji,_) in LEAGUES.items():
@@ -1309,7 +1324,7 @@ async def setup(interaction:discord.Interaction):
     await registration.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
     await registration.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
     await registration.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
-    for curator_key in ("curator_prospect","curator_division","curator_pro"):
+    for curator_key in ("curator_qualifications","curator_division","curator_pro"):
         await registration.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,read_message_history=True)
     staff_commands=staff_channels["⌨️・команды-штаба"]
     if not staff_commands.last_message_id:
@@ -1448,7 +1463,7 @@ async def top(interaction:discord.Interaction):
     d.text((35,30),"ЛУЧШИЕ ИГРОКИ",fill=(124,58,237),font=title)
     if not rows:d.text((35,105),"Пока нет данных",fill="white",font=body)
     for i,p in enumerate(rows,1):
-        member=interaction.guild.get_member(p["user_id"]); name=member.display_name if member else str(p["user_id"])
+        member=interaction.guild.get_member(p["user_id"]); name=p.get("nickname") or (member.display_name if member else str(p["user_id"]))
         y=85+i*65; d.rounded_rectangle((25,y-12,875,y+42),12,fill=(25,31,44)); d.text((45,y),f"{i:>2}. {name[:22]}",fill="white",font=body); d.text((610,y),f"{p['points']} pts   {p['wins']}W",fill=(104,211,145),font=body)
     out=io.BytesIO(); img.save(out,"PNG"); out.seek(0)
     await interaction.response.send_message(file=discord.File(out,"leaderboard.png"))

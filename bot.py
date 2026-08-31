@@ -477,7 +477,35 @@ class ResultSubmitView(discord.ui.View):
 
     @discord.ui.button(label="Отправить результат", emoji="📌", style=discord.ButtonStyle.success, custom_id="result:submit")
     async def submit(self, interaction, button):
-        await interaction.response.send_message("Используй команду **`/result`**: в одной форме укажи только **номер матча** и прикрепи **скриншот**. Счёт бот считает сам.",ephemeral=True)
+        await interaction.response.send_modal(ResultSubmitModal())
+
+
+class ResultSubmitModal(discord.ui.Modal, title="Отправка результата"):
+    def __init__(self):
+        super().__init__()
+        self.match_id_input=discord.ui.TextInput(placeholder="Например: 700",required=True,min_length=1,max_length=10)
+        self.screenshot_upload=discord.ui.FileUpload(required=True,min_values=1,max_values=1,custom_id="result_screenshot")
+        self.add_item(discord.ui.Label(
+            text="Номер матча",
+            description="Укажи только номер без символа #",
+            component=self.match_id_input,
+        ))
+        self.add_item(discord.ui.Label(
+            text="Скриншот итоговой таблицы",
+            description="Полный скрин с итоговым счётом и статистикой игроков",
+            component=self.screenshot_upload,
+        ))
+
+    async def on_submit(self,interaction):
+        try:
+            match_id=int(self.match_id_input.value.strip())
+            if match_id<=0: raise ValueError
+        except ValueError:
+            return await interaction.response.send_message("Укажи корректный номер матча.",ephemeral=True)
+        if not self.screenshot_upload.values:
+            return await interaction.response.send_message("Прикрепи скриншот матча.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        await process_result_submission(interaction,match_id,self.screenshot_upload.values[0])
 
 
 async def process_result_submission(interaction,match_id,attachment):
@@ -639,8 +667,7 @@ class DashboardPanelView(discord.ui.View):
     async def lookup_player(self,i): await i.response.send_modal(GameLookupModal())
     async def lookup_match(self,i): await i.response.send_modal(MatchLookupDashboardModal())
     async def change_id(self,i): await i.response.send_modal(GameIdModal())
-    async def result(self,i):
-        await i.response.send_message("Используй **`/result`** и в одной форме укажи номер матча и прикрепи скриншот. Счёт бот определит автоматически.",ephemeral=True)
+    async def result(self,i): await i.response.send_modal(ResultSubmitModal())
 
     async def form(self,i):
         p=db.player(i.guild_id,i.user.id); wr=100*p["wins"]/max(1,p["games"]); kd=p["kills"]/max(1,p["deaths"])
@@ -790,6 +817,22 @@ class TicketView(discord.ui.View):
         await channel.send(f"{interaction.user.mention}, опиши проблему и приложи доказате��ьства. Администраторы с правом Administrator видят этот канал.")
         await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Автор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
         await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
+
+
+class ResultModal(discord.ui.Modal, title="Результат матча"):
+    score = discord.ui.TextInput(label="Счёт", placeholder="13:9", max_length=7)
+    def __init__(self, match_id):
+        super().__init__(); self.match_id = match_id
+    async def on_submit(self, interaction):
+        try:
+            a,b = [int(x.strip()) for x in str(self.score).replace("-",":").split(":",1)]
+            assert (a == 13 or b == 13) and a != b and min(a,b) >= 0
+        except Exception:
+            return await interaction.response.send_message("Формат: `13:9`; одна команда должна иметь 13.", ephemeral=True)
+        if not db.finish_match(self.match_id,a,b):
+            return await interaction.response.send_message("Матч не най��ен или уже завершён.", ephemeral=True)
+        e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
+        await interaction.response.send_message(embed=e)
 
 
 async def send_profile(interaction,member=None):
@@ -1201,7 +1244,7 @@ async def setup(interaction:discord.Interaction):
             except discord.HTTPException: pass
     commands_embed=discord.Embed(title="⌨️ КОМАНДЫ SEOR",description="Используй slash-команды только в этом канале.",color=color())
     commands_embed.add_field(name="👤 Игрок",value="`/profile` — профиль\n`/set_game_id` — игровой ID\n`/standard` — норматив K/D\n`/qualification` — личная проверка норматива\n`/top` — топ игроков",inline=False)
-    commands_embed.add_field(name="🎮 Матчи",value="`/result` — отправить результат\n`/match_info` — информация о матче",inline=False)
+    commands_embed.add_field(name="🎮 Матчи",value="Кнопка **Отправить результат** — форма с номером матча и скриншотом\n`/match_info` — информация о матче",inline=False)
     commands_embed.add_field(name="🛡️ Администрация",value="`/set_nickname` — изменить ник участника на сервере",inline=False)
     commands_embed.set_footer(text="Стандарт квалификации: K/D 1.00 • Division и Pro освобождены")
     await commands_channel.send(embed=commands_embed)
@@ -1426,14 +1469,6 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
     db.set_nickname(interaction.guild_id,member.id,nickname)
     await send_staff_log(interaction.guild,"общий-журнал","✏️ Изменён ник участника",f"Участник: {member.mention}\nНовый ник: **{nickname}**\nИзменил: {interaction.user.mention}",discord.Color.blue())
     await interaction.response.send_message(f"✅ Ник участника {member.mention} изменён на **{nickname}**.",ephemeral=True)
-
-
-@bot.tree.command(name="result",description="Отправить номер матча и скриншот результата")
-@app_commands.check(command_channel_access)
-@app_commands.describe(match_id="Номер матча",screenshot="Полный скриншот итоговой таблицы")
-async def result(interaction:discord.Interaction,match_id:int,screenshot:discord.Attachment):
-    await interaction.response.defer(ephemeral=True,thinking=True)
-    await process_result_submission(interaction,match_id,screenshot)
 
 
 @bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")

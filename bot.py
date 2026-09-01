@@ -866,38 +866,50 @@ class RolePanelView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+    async def reply(self,interaction,message):
+        if interaction.response.is_done():
+            await interaction.followup.send(message,ephemeral=True)
+        else:
+            await interaction.response.send_message(message,ephemeral=True)
+
     async def selected(self,interaction):
         if not can_use_role_panel(interaction.user):
-            await interaction.response.send_message("Недостаточно прав.",ephemeral=True); return None,None
+            await self.reply(interaction,"Недостаточно прав."); return None,None
         if not self.target_id or not self.role_key:
-            await interaction.response.send_message("Сначала выбери участника и роль.",ephemeral=True); return None,None
+            await self.reply(interaction,"Сначала выбери участника и роль."); return None,None
         if self.role_key not in allowed_role_keys(interaction.user):
-            await interaction.response.send_message("По иерархии персонала ты не можешь выдавать или снимать эту роль.",ephemeral=True); return None,None
+            await self.reply(interaction,"По иерархии персонала ты не можешь выдавать или снимать эту роль."); return None,None
         member=interaction.guild.get_member(self.target_id)
         roles=await ensure_staff_roles(interaction.guild)
         role=roles.get(self.role_key)
         if role and role >= interaction.guild.me.top_role:
-            await interaction.response.send_message("Бот не может управлять этой ролью: владелец сервера должен поднять роль бота выше ролей лиг в списке ролей Discord.",ephemeral=True)
+            await self.reply(interaction,"Бот не может управлять этой ролью: владелец сервера должен поднять роль бота выше ролей лиг в списке ролей Discord.")
             return None,None
         return member,role
 
     @discord.ui.button(label="Выдать",emoji="✅",style=discord.ButtonStyle.success,row=2)
     async def give(self,interaction,button):
+        await interaction.response.defer(ephemeral=True,thinking=True)
         member,role=await self.selected(interaction)
         if not member or not role: return
-        try: await member.add_roles(role,reason=f"SEOR dashboard: {interaction.user}")
-        except discord.Forbidden: return await interaction.response.send_message("Не удалось выдать роль: подними роль бота выше выдаваемой роли и включи ему право `Управлять ролями`.",ephemeral=True)
-        await interaction.response.send_message(f"{role.mention} выдана участнику {member.mention}.",ephemeral=True)
+        try:
+            await member.add_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+        except discord.Forbidden:
+            return await interaction.followup.send("Не удалось выдать роль: подними роль бота выше выдаваемой роли и включи ему право `Управлять ролями`.",ephemeral=True)
+        await interaction.followup.send(f"{role.mention} выдана участнику {member.mention}.",ephemeral=True)
 
     @discord.ui.button(label="Снять",emoji="➖",style=discord.ButtonStyle.danger,row=2)
     async def remove(self,interaction,button):
+        await interaction.response.defer(ephemeral=True,thinking=True)
         member,role=await self.selected(interaction)
         if not member or not role: return
         if member.id==interaction.guild.owner_id and self.role_key=="owner":
-            return await interaction.response.send_message("Нельзя снять Owner с владельца сервера.",ephemeral=True)
-        try: await member.remove_roles(role,reason=f"SEOR dashboard: {interaction.user}")
-        except discord.Forbidden: return await interaction.response.send_message("Роль бота должна находиться выше снимаемой роли.",ephemeral=True)
-        await interaction.response.send_message(f"{role.mention} снята с участника {member.mention}.",ephemeral=True)
+            return await interaction.followup.send("Нельзя снять Owner с владельца сервера.",ephemeral=True)
+        try:
+            await member.remove_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+        except discord.Forbidden:
+            return await interaction.followup.send("Роль бота должна находиться выше снимаемой роли.",ephemeral=True)
+        await interaction.followup.send(f"{role.mention} снята с участника {member.mention}.",ephemeral=True)
 
 
 class DashboardQuickView(discord.ui.View):

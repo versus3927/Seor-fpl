@@ -64,6 +64,11 @@ def set_game_id(guild_id:int,user_id:int,game_id:str):
     with connect() as con:
         con.execute("UPDATE players SET game_id=? WHERE guild_id=? AND user_id=?",(game_id,guild_id,user_id))
 
+def set_points(guild_id:int,user_id:int,points:int):
+    ensure_player(guild_id,user_id)
+    with connect() as con:
+        con.execute("UPDATE players SET points=? WHERE guild_id=? AND user_id=?",(max(0,int(points)),guild_id,user_id))
+
 def set_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
     ensure_player(guild_id,user_id)
     with connect() as con:

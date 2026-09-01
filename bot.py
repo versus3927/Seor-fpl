@@ -1330,10 +1330,35 @@ async def setup_hook():
         await bot.tree.sync()
 
 
+async def give_default_league_to_registered(guild):
+    """Выдать Default League всем зарегистрированным, у кого ещё нет роли лиги."""
+    registered=discord.utils.get(guild.roles,name=REGISTERED_ROLE_NAME)
+    default_league=discord.utils.get(guild.roles,name=LEAGUE_ROLES["default"])
+    if not registered or not default_league:
+        return 0
+    league_names=set(LEAGUE_ROLES.values())
+    changed=0
+    for member in guild.members:
+        if member.bot or registered not in member.roles:
+            continue
+        if any(role.name in league_names for role in member.roles):
+            continue
+        try:
+            await member.add_roles(default_league,reason="SEOR: Default League для зарегистрированного игрока")
+            changed+=1
+        except discord.Forbidden:
+            pass
+    return changed
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
+    for guild in bot.guilds:
+        changed=await give_default_league_to_registered(guild)
+        if changed:
+            print(f"{guild.name}: Default League выдана {changed} зарегистрированным",flush=True)
 
 
 @bot.event
@@ -1511,14 +1536,15 @@ async def setup(interaction:discord.Interaction):
     league_roles=[staff_roles[f"league_{key}"] for key in LEAGUE_ROLES]
     for member in g.members:
         if member.bot: continue
-        if db.player(g.id,member.id).get("game_id"):
-            missing=[]
-            if registered_role not in member.roles: missing.append(registered_role)
-            if not any(role in member.roles for role in league_roles):
-                missing.append(staff_roles["league_default"])
-            if missing:
-                try: await member.add_roles(*missing,reason="SEOR: перенос регистрации и Default League")
-                except discord.Forbidden: pass
+        has_saved_profile=bool(db.player(g.id,member.id).get("game_id"))
+        is_registered=registered_role in member.roles or has_saved_profile
+        if not is_registered: continue
+        missing=[]
+        if registered_role not in member.roles: missing.append(registered_role)
+        if not any(role in member.roles for role in league_roles): missing.append(staff_roles["league_default"])
+        if missing:
+            try: await member.add_roles(*missing,reason="SEOR: регистрация и Default League")
+            except discord.Forbidden: pass
 
     # /setup синхронизирует только структуру, которой управляет бот.
     # Посторонние пользовательские категории и каналы не затрагиваются.

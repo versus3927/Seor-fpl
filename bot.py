@@ -19,6 +19,7 @@ from profile_card import build_profile_card
 from leaderboard_card import build_leaderboard
 from matches_card import build_matches_card
 from screenshot_reader import analyze_screenshot
+from elo_levels import elo_level, elo_table_text
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -830,10 +831,10 @@ class DashboardPanelView(discord.ui.View):
 
     async def place(self,i):
         rows=db.leaders(i.guild_id,1000); pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.player(i.guild_id,i.user.id)
-        await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**.",ephemeral=True)
+        await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**, уровень: **LVL {elo_level(p['points'])}**.",ephemeral=True)
 
     async def norms(self,i):
-        await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\nЛиги по ELO: Default 1000 · Qualifications 1150 · Division 1350 · Pro 1600.",ephemeral=True)
+        await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\n**Уровни ELO:**\n{elo_table_text()}",ephemeral=True)
 
     async def matches(self,i): await send_recent_matches(i)
 
@@ -847,7 +848,7 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message("🚪 Ты покинул пати." if result!="not_in_party" else "Ты не состоишь в пати.",ephemeral=True)
     async def account(self,i):
         p=db.player(i.guild_id,i.user.id)
-        await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}**\nМатчей: **{p['games']}**",ephemeral=True)
+        await i.response.send_message(f"⚙️ Discord: {i.user.mention}\nИгровой ID: `{p['game_id'] or 'не указан'}`\nELO: **{p['points']}** · **LVL {elo_level(p['points'])}**\nМатчей: **{p['games']}**",ephemeral=True)
 
     async def back(self,i):
         await i.response.edit_message(embed=dashboard_home_embed(),view=DashboardView())

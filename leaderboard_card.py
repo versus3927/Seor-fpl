@@ -2,6 +2,7 @@ import io
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
 import requests
+from elo_levels import elo_level
 
 ROOT=Path(__file__).resolve().parent
 W,H=1080,1280
@@ -60,7 +61,7 @@ def build_leaderboard(rows,league):
   d.polygon([(cx-105,base_y),(cx+105,base_y),(cx+88,base_y+h),(cx-88,base_y+h)],fill=(22,24,38,245),outline=(*secondary,170))
   d.text((cx,base_y+34),f'#{actual_rank}',font=font(28,True),anchor='mm',fill=(*primary,255))
   d.text((cx,base_y+77),item['name'][:14],font=font(22,True),anchor='mm',fill=(245,246,250,255))
-  d.text((cx,base_y+116),f"{item['points']} ELO",font=font(18,True),anchor='mm',fill=(*secondary,255))
+  d.text((cx,base_y+116),f"LVL {elo_level(item['points'])} · {item['points']} ELO",font=font(18,True),anchor='mm',fill=(*secondary,255))
   d.text((cx,base_y+151),f"{item['wins']}W · {item['games']} игр",font=font(16),anchor='mm',fill=(169,172,190,255))
  # Remaining rows
  start=650
@@ -73,6 +74,6 @@ def build_leaderboard(rows,league):
   d.text((128,y+31),f'#{idx}',font=font(19,True),anchor='lm',fill=(*primary,255))
   d.text((190,y+31),item['name'][:25],font=font(20,True),anchor='lm',fill=(244,245,250,255))
   d.text((760,y+31),f"{item['wins']}W",font=font(18,True),anchor='rm',fill=(70,190,125,255))
-  d.text((1005,y+31),f"{item['points']} ELO",font=font(20,True),anchor='rm',fill=(*secondary,255))
+  d.text((1005,y+31),f"LVL {elo_level(item['points'])} · {item['points']} ELO",font=font(18,True),anchor='rm',fill=(*secondary,255))
  d.text((540,1244),f'{league.upper()} LEAGUE  •  SEOR CYBER',font=font(16,True),anchor='mm',fill=(*primary,200))
  out=io.BytesIO(); canvas.convert('RGB').save(out,'PNG',quality=95); out.seek(0); return out

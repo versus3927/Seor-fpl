@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import requests
+from elo_levels import elo_level, elo_bounds
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 ROOT = Path(__file__).resolve().parent
@@ -205,7 +206,8 @@ def _compose(player, display_name, avatar_url, recent, art_path):
     for rad,col,off in [(92,(0,0,0),14),(86,primary,8),(76,league_color,2),(62,(15,16,26),0)]:
         pts=[(cx+rad*__import__('math').cos(__import__('math').radians(60*k-30)),cy+off+rad*__import__('math').sin(__import__('math').radians(60*k-30))) for k in range(6)]
         draw.polygon(pts,fill=(*col,235) if col!=(0,0,0) else (0,0,0,130),outline=(*_mix(col,(255,255,255),.25),255) if col!=(0,0,0) else None)
-    _text(draw,(cx,cy-5),str(max(1,min(10,1+max(0,player['points']-900)//120))),52,WHITE,True,"mm")
+    level=elo_level(player["points"])
+    _text(draw,(cx,cy-5),str(level),52,WHITE,True,"mm")
     _text(draw,(cx,cy+52),"LVL",17,MUTED,True,"mm")
     # Separate identity sections.
     info=[("УЧАСТНИК",display_name[:16],primary),("STANDOFF 2 ID",player.get('game_id') or 'НЕ УКАЗАН',secondary),("ЛИГА",league,league_color)]
@@ -228,12 +230,12 @@ def _compose(player, display_name, avatar_url, recent, art_path):
         draw.rounded_rectangle((x,y,x+156,y+100),radius=15,fill=(30,31,45,238),outline=(*primary,65),width=1)
         _text(draw,(x+14,y+14),label,16,MUTED,True); _text(draw,(x+142,y+48),val,30,WHITE,True,'ra')
         _progress(draw,(x+14,y+81,x+142,y+88),min(1,float(val.strip('%'))/100) if isinstance(val,str) and val.endswith('%') else min(1,(i+2)/10),primary,secondary)
-    # League progress.
+    # FACEIT-style Elo level progress.
     card((32,925,1048,1075),league_color,24)
-    _text(draw,(64,952),"ПРОГРЕСС ЛИГИ",23,MUTED,True); _text(draw,(64,990),league,34,league_color,True)
-    targets=[(1150,'QUALIFICATIONS'),(1350,'DIVISION'),(1600,'PRO')]; nxt=next(((v,n) for v,n in targets if player['points']<v),None)
-    target=nxt[0] if nxt else 1600; lower=max([900]+[v for v,_ in targets if v<=player['points']]); ratio=1 if not nxt else (player['points']-lower)/max(1,target-lower)
-    _progress(draw,(545,975,1005,991),ratio,primary,secondary); _text(draw,(545,1010),player['points'],19,primary,True); _text(draw,(1005,1010),target,19,MUTED,True,'ra')
+    level,level_floor,next_level_floor,ratio=elo_bounds(player["points"])
+    _text(draw,(64,952),"ПРОГРЕСС ELO",23,MUTED,True); _text(draw,(64,990),f"LEVEL {level}",34,league_color,True)
+    target_label=next_level_floor if next_level_floor is not None else "MAX"
+    _progress(draw,(545,975,1005,991),ratio,primary,secondary); _text(draw,(545,1010),player['points'],19,primary,True); _text(draw,(1005,1010),target_label,19,MUTED,True,'ra')
     # Recent matches.
     card((32,1105,1048,1265),primary,24); _text(draw,(64,1132),"ПОСЛЕДНИЕ МАТЧИ",26,WHITE,True)
     results=[_match_result(m,player['user_id']) for m in recent[:12]]; results=[x for x in results if x]

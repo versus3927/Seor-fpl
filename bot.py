@@ -190,6 +190,20 @@ def is_developer(member):
     return has_role(member, EXTRA_ROLE_SPECS["developer"][0])
 
 
+def can_use_sanctions(member):
+    """Санкции доступны только администрации и профильным ролям поддержки."""
+    sanction_roles=(
+        STAFF_ROLES["owner"],STAFF_ROLES["admin"],
+        EXTRA_ROLE_SPECS["developer"][0],EXTRA_ROLE_SPECS["director"][0],
+        EXTRA_ROLE_SPECS["head_admin"][0],EXTRA_ROLE_SPECS["ticket_admin"][0],
+        EXTRA_ROLE_SPECS["head_ac"][0],EXTRA_ROLE_SPECS["games_admin"][0],
+        EXTRA_ROLE_SPECS["anticheat"][0],EXTRA_ROLE_SPECS["moderator"][0],
+    )
+    return member.id==member.guild.owner_id or any(has_role(member,name) for name in sanction_roles)
+
+
+
+
 def curator_league(member):
     for league in ("qualifications","division","pro"):
         if has_role(member,STAFF_ROLES[f"curator_{league}"]): return league
@@ -985,13 +999,23 @@ async def send_staff_log(guild,channel_suffix,title,description,log_color=None):
         except discord.HTTPException: pass
 
 
+async def send_punishment_log(guild,title,description,log_color=None):
+    channel=next((c for c in guild.text_channels if "наказан" in normalized_role_name(c.name)),None)
+    if channel:
+        try:
+            embed=discord.Embed(title=title,description=description,color=log_color or discord.Color.orange(),timestamp=datetime.now(timezone.utc))
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+
 class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
     user_id=discord.ui.TextInput(label="Discord ID участника",placeholder="123456789012345678",max_length=20)
     action=discord.ui.TextInput(label="Действие",placeholder="timeout / kick / ban",max_length=10)
     duration=discord.ui.TextInput(label="Минуты для timeout",placeholder="Например: 60",required=False,max_length=6)
     reason=discord.ui.TextInput(label="Причина",style=discord.TextStyle.paragraph,max_length=500)
     async def on_submit(self,interaction):
-        if not is_staff_member(interaction.user): return await interaction.response.send_message("Нет доступа.",ephemeral=True)
+        if not can_use_sanctions(interaction.user): return await interaction.response.send_message("Санкции доступны только администрации и профильным ролям поддержки.",ephemeral=True)
         try: member=interaction.guild.get_member(int(str(self.user_id).strip()))
         except ValueError: member=None
         if not member: return await interaction.response.send_message("Участник не найден.",ephemeral=True)
@@ -1009,7 +1033,9 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
             elif action=="ban": await member.ban(reason=reason,delete_message_seconds=0)
         except (discord.Forbidden,discord.HTTPException,ValueError):
             return await interaction.followup.send("Не удалось применить санкцию. Проверь права и длительность.",ephemeral=True)
-        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применена",f"Участник: {member.mention}\nДействие: **{action}**\nПричина: {reason}\nАдминистратор: {interaction.user.mention}",discord.Color.orange())
+        sanction_description=f"Участник: {member.mention}\nДействие: **{action}**\nПричина: {reason}\nАдминистратор: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применена",sanction_description,discord.Color.orange())
+        await send_punishment_log(interaction.guild,"⚖️ Санкция применена",sanction_description,discord.Color.orange())
         await interaction.followup.send(f"✅ Санкция **{action}** применена к {member.mention}.",ephemeral=True)
 
 
@@ -1039,19 +1065,22 @@ def find_default_warn_roles(guild):
 
 
 def can_issue_warn_type(member,warn_type):
+    if not can_use_sanctions(member):
+        return False
     senior=(STAFF_ROLES["owner"],EXTRA_ROLE_SPECS["developer"][0],EXTRA_ROLE_SPECS["director"][0],EXTRA_ROLE_SPECS["head_admin"][0])
     if member.id==member.guild.owner_id or any(has_role(member,name) for name in senior):
         return True
     if warn_type=="anticheat":
-        return has_role(member,EXTRA_ROLE_SPECS["head_ac"][0]) or has_role(member,EXTRA_ROLE_SPECS["anticheat"][0])
+        return has_role(member,EXTRA_ROLE_SPECS["head_ac"][0]) or has_role(member,EXTRA_ROLE_SPECS["anticheat"][0]) or has_role(member,STAFF_ROLES["admin"])
     if warn_type=="admin":
         return has_role(member,STAFF_ROLES["admin"])
     if warn_type=="all":
         return False
-    if has_role(member,STAFF_ROLES["admin"]):
-        return True
-    curator_name=STAFF_ROLES.get(f"curator_{warn_type}")
-    return bool(curator_name and has_role(member,curator_name))
+    league_warn_roles=(
+        STAFF_ROLES["admin"],EXTRA_ROLE_SPECS["ticket_admin"][0],
+        EXTRA_ROLE_SPECS["games_admin"][0],EXTRA_ROLE_SPECS["moderator"][0],
+    )
+    return any(has_role(member,name) for name in league_warn_roles)
 
 
 class WarnMemberSelect(discord.ui.UserSelect):
@@ -1118,7 +1147,9 @@ class WarnReasonModal(discord.ui.Modal,title="Выдать варн"):
         reason=str(self.reason).strip()
         try: await member.send(f"⚠️ На сервере **{interaction.guild.name}** тебе выдан **{role.name}**. Причина: {reason}")
         except discord.HTTPException: pass
-        await send_staff_log(interaction.guild,"общий-журнал","⚠️ Выдан варн",f"Участник: {member.mention}\nТип: **{WARN_TYPE_LABELS[self.warn_type]}**\nРоль: {role.mention}\nПричина: {reason}\nВыдал: {interaction.user.mention}",discord.Color.orange())
+        warn_description=f"Участник: {member.mention}\nТип: **{WARN_TYPE_LABELS[self.warn_type]}**\nРоль: {role.mention}\nПричина: {reason}\nВыдал: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"общий-журнал","⚠️ Выдан варн",warn_description,discord.Color.orange())
+        await send_punishment_log(interaction.guild,"⚠️ Выдан варн",warn_description,discord.Color.orange())
         await interaction.followup.send(f"✅ Участнику {member.mention} выдана роль {role.mention}.",ephemeral=True)
 
 
@@ -1151,6 +1182,154 @@ class WarnPanelView(discord.ui.View):
     @discord.ui.button(label="Timeout / Kick / Ban",emoji="🛡️",style=discord.ButtonStyle.secondary,row=2)
     async def other_sanction(self,interaction,button):
         await interaction.response.send_modal(SanctionModal())
+
+
+REMOVE_SANCTION_LABELS={
+    "all_warns":"Снять все варны",
+    "anticheat":"Снять Anticheat warn",
+    "qualifications":"Снять Qualifications warn",
+    "default":"Снять Default warn",
+    "pro":"Снять Pro warn",
+    "division":"Снять Division warn",
+    "admin":"Снять Admin warn",
+    "timeout":"Снять мут / timeout",
+}
+
+
+def warning_roles_for_type(guild,warn_type,roles):
+    if warn_type=="all_warns":
+        result=[]
+        for role in guild.roles:
+            name=normalized_role_name(role.name)
+            if "warn" in name or "варн" in name:
+                result.append(role)
+        return result
+    if warn_type=="default":
+        return [role for role in find_default_warn_roles(guild) if role]
+    if warn_type in WARN_TIER_KEYS:
+        return [roles.get(key) for key in WARN_TIER_KEYS[warn_type] if roles.get(key)]
+    special_key=WARN_SPECIAL_KEYS.get(warn_type)
+    return [roles[special_key]] if special_key and roles.get(special_key) else []
+
+
+def can_remove_sanction_type(member,action):
+    if action=="timeout":
+        return can_use_sanctions(member)
+    warn_type="all" if action=="all_warns" else action
+    return can_issue_warn_type(member,warn_type)
+
+
+class RemoveSanctionMemberSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Выбери участника",min_values=1,max_values=1,row=0)
+    async def callback(self,interaction):
+        member=self.values[0]
+        self.view.target_id=member.id
+        self.placeholder=f"Участник: {member.display_name}"[:150]
+        await interaction.response.edit_message(embed=self.view.make_embed(interaction.guild),view=self.view)
+
+
+class RemoveSanctionTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options=[discord.SelectOption(label=label,value=key,emoji="♻️") for key,label in REMOVE_SANCTION_LABELS.items()]
+        super().__init__(placeholder="Выбери, что снять",options=options,min_values=1,max_values=1,row=1)
+    async def callback(self,interaction):
+        self.view.action=self.values[0]
+        self.placeholder=REMOVE_SANCTION_LABELS[self.values[0]][:150]
+        await interaction.response.edit_message(embed=self.view.make_embed(interaction.guild),view=self.view)
+
+
+class UnbanMemberModal(discord.ui.Modal,title="Разбанить и вернуть на сервер"):
+    user_id=discord.ui.TextInput(label="Discord ID пользователя",placeholder="123456789012345678",max_length=20)
+    reason=discord.ui.TextInput(label="Причина разбана",style=discord.TextStyle.paragraph,required=False,max_length=300)
+
+    async def on_submit(self,interaction):
+        if not can_administer(interaction.user):
+            return await interaction.response.send_message("Разбан доступен только администрации.",ephemeral=True)
+        try: user_id=int(str(self.user_id).strip())
+        except ValueError: return await interaction.response.send_message("Укажи корректный Discord ID.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        reason=str(self.reason).strip() or "не указана"
+        try:
+            user=await bot.fetch_user(user_id)
+            await interaction.guild.unban(user,reason=f"SEOR FACEIT unban by {interaction.user}: {reason}")
+        except discord.NotFound:
+            return await interaction.followup.send("Пользователь не найден в списке заблокированных.",ephemeral=True)
+        except (discord.Forbidden,discord.HTTPException):
+            return await interaction.followup.send("Не удалось разбанить пользователя. Проверь право бота `Банить участников`.",ephemeral=True)
+        invite=None
+        for channel in interaction.guild.text_channels:
+            if channel.permissions_for(interaction.guild.me).create_instant_invite:
+                try:
+                    invite=await channel.create_invite(max_age=86400,max_uses=1,unique=True,reason="SEOR FACEIT: возврат после разбана")
+                    break
+                except discord.HTTPException:
+                    continue
+        if invite:
+            try: await user.send(f"✅ Ты разбанен на сервере **{interaction.guild.name}**. Одноразовая ссылка для возвращения: {invite.url}")
+            except discord.HTTPException: pass
+        unban_description=f"Пользователь: {user.mention} (`{user.id}`)\nПричина: {reason}\nАдминистратор: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"общий-журнал","♻️ Пользователь разбанен",unban_description,discord.Color.green())
+        await send_punishment_log(interaction.guild,"♻️ Пользователь разбанен",unban_description,discord.Color.green())
+        suffix=" Одноразовое приглашение отправлено в личные сообщения." if invite else " Приглашение создать не удалось — отправь ссылку вручную."
+        await interaction.followup.send(f"✅ {user.mention} разбанен.{suffix}",ephemeral=True)
+
+
+class RemoveSanctionView(discord.ui.View):
+    def __init__(self,manager):
+        super().__init__(timeout=300)
+        self.manager_id=manager.id; self.target_id=None; self.action=None
+        self.add_item(RemoveSanctionMemberSelect()); self.add_item(RemoveSanctionTypeSelect())
+
+    def make_embed(self,guild):
+        member=guild.get_member(self.target_id) if self.target_id else None
+        who=member.mention if member else "не выбран"
+        action=REMOVE_SANCTION_LABELS.get(self.action,"не выбрано")
+        return discord.Embed(title="♻️ СНЯТИЕ САНКЦИЙ",description=f"Участник: {who}\nДействие: **{action}**\n\nДля разбана пользователя, которого уже нет на сервере, используй отдельную кнопку.",color=discord.Color.green())
+
+    async def interaction_check(self,interaction):
+        if interaction.user.id!=self.manager_id:
+            await interaction.response.send_message("Эта панель открыта другим сотрудником.",ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Снять санкцию",emoji="♻️",style=discord.ButtonStyle.success,row=2)
+    async def remove_sanction(self,interaction,button):
+        if not self.target_id or not self.action:
+            return await interaction.response.send_message("Сначала выбери участника и санкцию.",ephemeral=True)
+        if not can_remove_sanction_type(interaction.user,self.action):
+            return await interaction.response.send_message("У тебя нет права снимать этот тип санкции.",ephemeral=True)
+        member=interaction.guild.get_member(self.target_id)
+        if not member:
+            return await interaction.response.send_message("Участник не найден на сервере.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        if self.action=="timeout":
+            try:
+                await member.timeout(None,reason=f"SEOR FACEIT timeout removed by {interaction.user}")
+            except (discord.Forbidden,discord.HTTPException):
+                return await interaction.followup.send("Не удалось снять мут. Проверь права бота и иерархию ролей.",ephemeral=True)
+            removed_text="мут / timeout"
+        else:
+            roles=await ensure_staff_roles(interaction.guild)
+            candidates=warning_roles_for_type(interaction.guild,self.action,roles)
+            removable=[role for role in candidates if role in member.roles and role < interaction.guild.me.top_role]
+            if not removable:
+                return await interaction.followup.send("У участника нет выбранного варна или бот не может управлять его ролью.",ephemeral=True)
+            try:
+                await member.remove_roles(*removable,reason=f"SEOR FACEIT warnings removed by {interaction.user}")
+            except discord.Forbidden:
+                return await interaction.followup.send("Не удалось снять роли варнов. Подними роль бота выше них.",ephemeral=True)
+            removed_text=", ".join(role.name for role in removable)
+        removal_description=f"Участник: {member.mention}\nСнято: **{removed_text}**\nАдминистратор: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"общий-журнал","♻️ Санкция снята",removal_description,discord.Color.green())
+        await send_punishment_log(interaction.guild,"♻️ Санкция снята",removal_description,discord.Color.green())
+        await interaction.followup.send(f"✅ С участника {member.mention} снято: **{removed_text}**.",ephemeral=True)
+
+    @discord.ui.button(label="Разбанить / вернуть",emoji="🔓",style=discord.ButtonStyle.primary,row=2)
+    async def unban(self,interaction,button):
+        if not can_administer(interaction.user):
+            return await interaction.response.send_message("Разбан доступен только администрации.",ephemeral=True)
+        await interaction.response.send_modal(UnbanMemberModal())
 
 
 class MatchAdminModal(discord.ui.Modal,title="Управление матчем"):
@@ -1197,9 +1376,15 @@ class StaffControlView(discord.ui.View):
         await i.response.send_message("Нет доступа к панели штаба.",ephemeral=True); return False
     @discord.ui.button(label="Санкции",emoji="⚖️",style=discord.ButtonStyle.danger,custom_id="staff:sanction",row=0)
     async def sanctions(self,i,b):
-        if not is_staff_member(i.user):
-            return await i.response.send_message("Нет доступа к санкциям.",ephemeral=True)
+        if not can_use_sanctions(i.user):
+            return await i.response.send_message("Санкции доступны только администрации и профильным ролям поддержки.",ephemeral=True)
         view=WarnPanelView(i.user)
+        await i.response.send_message(embed=view.make_embed(i.guild),view=view,ephemeral=True)
+    @discord.ui.button(label="Снять санкцию",emoji="♻️",style=discord.ButtonStyle.success,custom_id="staff:remove_sanction",row=0)
+    async def remove_sanction(self,i,b):
+        if not can_use_sanctions(i.user):
+            return await i.response.send_message("Снятие санкций доступно только администрации и профильным ролям поддержки.",ephemeral=True)
+        view=RemoveSanctionView(i.user)
         await i.response.send_message(embed=view.make_embed(i.guild),view=view,ephemeral=True)
     @discord.ui.button(label="Роли",emoji="🛡️",style=discord.ButtonStyle.primary,custom_id="staff:roles",row=0)
     async def roles(self,i,b):
@@ -1327,6 +1512,26 @@ TICKET_CLAIM_ROLES={
 def can_claim_ticket(member,channel):
     keys=TICKET_CLAIM_ROLES.get(ticket_type_key(channel),())
     return any((name:=staff_role_name(key)) and has_role(member,name) for key in keys)
+
+
+async def ensure_admin_panel_buttons(guild):
+    channel=discord.utils.get(guild.text_channels,name="🎛️・панель-админа")
+    if not channel:
+        return False
+    try:
+        async for message in channel.history(limit=30):
+            if message.author!=guild.me or not message.embeds:
+                continue
+            if message.embeds[0].title not in {"🎛️ ПАНЕЛЬ АДМИНА","🛡️ SEOR CONTROL DESK"}:
+                continue
+            component_ids={getattr(child,"custom_id",None) for row in message.components for child in getattr(row,"children",())}
+            if "staff:remove_sanction" not in component_ids:
+                await message.edit(view=StaffControlView())
+                return True
+            return False
+    except discord.HTTPException:
+        return False
+    return False
 
 
 async def ensure_ticket_inbox(guild):
@@ -1844,7 +2049,7 @@ async def apply_league_channel_privacy(guild):
     return changed
 
 
-READONLY_CHANNEL_KEYWORDS=("магазин","топ-сервера","трансляц","fpl-news","fpl-новост","новост","news","наказан")
+READONLY_CHANNEL_KEYWORDS=("магазин","топ-сервера","top-server","трансляц","настройка-лобби","история-игр","fpl-news","fpl-новост","новост","news","наказан","правил","регламент")
 
 
 def is_public_readonly_channel(channel):
@@ -1864,14 +2069,30 @@ async def merge_channel_permissions(target,role,**values):
 
 
 async def apply_public_readonly_channels(guild):
-    """Оставить магазин, топ, трансляции, новости и наказания видимыми, но закрыть отправку обычным участникам."""
+    """Публичные служебные каналы: все читают, писать может только старшее руководство."""
     registered=find_role(guild,REGISTERED_ROLE_NAME)
-    staff_names=set(STAFF_ROLES.values()) | {
+    allowed_writer_names=(
+        STAFF_ROLES["owner"],STAFF_ROLES["admin"],
+        EXTRA_ROLE_SPECS["head_admin"][0],EXTRA_ROLE_SPECS["developer"][0],
+        EXTRA_ROLE_SPECS["director"][0],EXTRA_ROLE_SPECS["pro_lead"][0],
+        "head curator","хед куратор",
+    )
+    allowed_roles=[]
+    for role_name in allowed_writer_names:
+        role=find_role(guild,role_name)
+        if role and role not in allowed_roles:
+            allowed_roles.append(role)
+    known_staff_names=set(STAFF_ROLES.values()) | {
         EXTRA_ROLE_SPECS[key][0] for key in (
             "developer","director","head_admin","ticket_admin","head_ac","games_admin",
             "anticheat","moderator","content_creator","streamer","pro_lead",
         )
     }
+    disallowed_roles=[]
+    for role_name in known_staff_names:
+        role=find_role(guild,role_name)
+        if role and role not in allowed_roles and role not in disallowed_roles:
+            disallowed_roles.append(role)
     changed=0
     for channel in guild.text_channels:
         if not is_public_readonly_channel(channel):
@@ -1883,11 +2104,11 @@ async def apply_public_readonly_channels(guild):
         changed+=await merge_channel_permissions(channel,guild.default_role,**readonly)
         if registered:
             changed+=await merge_channel_permissions(channel,registered,view_channel=True,read_message_history=True,**readonly)
+        for role in disallowed_roles:
+            changed+=await merge_channel_permissions(channel,role,view_channel=True,read_message_history=True,**readonly)
         changed+=await merge_channel_permissions(channel,guild.me,view_channel=True,read_message_history=True,send_messages=True,add_reactions=True,send_messages_in_threads=True)
-        for role_name in staff_names:
-            role=find_role(guild,role_name)
-            if role:
-                changed+=await merge_channel_permissions(channel,role,view_channel=True,read_message_history=True,send_messages=True,add_reactions=True,send_messages_in_threads=True)
+        for role in allowed_roles:
+            changed+=await merge_channel_permissions(channel,role,view_channel=True,read_message_history=True,send_messages=True,add_reactions=True,create_public_threads=True,send_messages_in_threads=True)
     return changed
 
 
@@ -1917,6 +2138,7 @@ async def on_ready():
         default_stats=await give_default_league_to_registered(guild)
         print(f"{guild.name}: Default League sync {default_stats}",flush=True)
         await ensure_admin_panel_channel_name(guild)
+        await ensure_admin_panel_buttons(guild)
         privacy_updates=await apply_league_channel_privacy(guild)
         if privacy_updates:
             print(f"{guild.name}: обновлено прав лиг: {privacy_updates}",flush=True)

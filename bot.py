@@ -833,8 +833,11 @@ class StaffMemberSelect(discord.ui.UserSelect):
     def __init__(self):
         super().__init__(placeholder="Выбери участника",min_values=1,max_values=1,row=0)
     async def callback(self,interaction):
-        self.view.target_id=self.values[0].id
-        await interaction.response.defer()
+        member=self.values[0]
+        self.view.target_id=member.id
+        self.placeholder=f"Участник: {member.display_name}"[:150]
+        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник выбран: {member.mention}\nТеперь выбери доступную роль.",color=color())
+        await interaction.response.edit_message(embed=embed,view=self.view)
 
 
 class StaffRoleSelect(discord.ui.Select):
@@ -845,7 +848,12 @@ class StaffRoleSelect(discord.ui.Select):
         super().__init__(placeholder="Выбери доступную роль",options=options,min_values=1,max_values=1,row=1)
     async def callback(self,interaction):
         self.view.role_key=self.values[0]
-        await interaction.response.defer()
+        selected=next((option.label for option in self.options if option.value==self.values[0]),self.values[0])
+        self.placeholder=f"Роль: {selected}"[:150]
+        member=interaction.guild.get_member(self.view.target_id) if self.view.target_id else None
+        who=member.mention if member else "сначала выбери участника"
+        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник: {who}\nРоль: **{selected}**\nНажми **Выдать** или **Снять**.",color=color())
+        await interaction.response.edit_message(embed=embed,view=self.view)
 
 
 class RolePanelView(discord.ui.View):
@@ -853,6 +861,17 @@ class RolePanelView(discord.ui.View):
         super().__init__(timeout=300)
         self.target_id=None; self.role_key=None
         self.add_item(StaffMemberSelect()); self.add_item(StaffRoleSelect(allowed_role_keys(manager)))
+
+    async def on_error(self,interaction,error,item):
+        print(f"Role panel error: {error!r}",flush=True)
+        message="Ошибка панели ролей. Попробуй заново или используй `/league_role`."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message,ephemeral=True)
+            else:
+                await interaction.response.send_message(message,ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     async def selected(self,interaction):
         if not can_use_role_panel(interaction.user):

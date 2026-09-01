@@ -178,6 +178,7 @@ docker compose logs -f
 После `/setup` бот создаёт роли с названиями из референса без переименования:
 
 - `owner`
+- `ALL warn`, `anticheat warn`, `admin warn`;
 - `default League`
 - `Developer`
 - `SEOR CYBER bot`

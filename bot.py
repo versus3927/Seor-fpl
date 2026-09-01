@@ -1119,6 +1119,7 @@ class TicketTypeSelect(discord.ui.Select):
         control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или сотрудник администрации может закрыть тикет кнопкой ниже.",color=discord.Color.red())
         await channel.send(embed=control,view=TicketChannelView())
         await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
+        await notify_ticket_inbox(guild,channel,title,interaction.user)
         await interaction.followup.send(f"Тикет создан: {channel.mention}",ephemeral=True)
 
 
@@ -1173,6 +1174,40 @@ TICKET_CLAIM_ROLES={
 def can_claim_ticket(member,channel):
     keys=TICKET_CLAIM_ROLES.get(ticket_type_key(channel),())
     return any((name:=staff_role_name(key)) and has_role(member,name) for key in keys)
+
+
+async def ensure_ticket_inbox(guild):
+    """Создать единый канал входящих тикетов без дубликатов."""
+    channel_name="🎫・входящие-тикеты"
+    existing=discord.utils.get(guild.text_channels,name=channel_name)
+    if existing:
+        return existing
+    category=discord.utils.get(guild.categories,name="🛡️ SEOR STAFF")
+    if not category:
+        category=await guild.create_category("🛡️ SEOR STAFF",reason="SEOR FACEIT: раздел администрации")
+    overwrites={
+        guild.default_role:discord.PermissionOverwrite(view_channel=False),
+        guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True,read_message_history=True),
+    }
+    oversight_keys=("owner","developer","director","head_admin")
+    handler_keys=tuple(dict.fromkeys(key for keys in TICKET_CLAIM_ROLES.values() for key in keys))
+    for key in dict.fromkeys((*oversight_keys,*handler_keys)):
+        name=staff_role_name(key)
+        role=find_role(guild,name) if name else None
+        if role:
+            overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
+    channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="SEOR FACEIT: входящие тикеты")
+    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смогут только профильные сотрудники и старшее руководство.",color=color())
+    await channel.send(embed=intro)
+    return channel
+
+
+async def notify_ticket_inbox(guild,ticket_channel,title,author):
+    inbox=await ensure_ticket_inbox(guild)
+    embed=discord.Embed(title="📥 Новый тикет",description=f"Раздел: **{title}**\nАвтор: {author.mention}\nКанал: {ticket_channel.mention}",color=discord.Color.purple())
+    view=discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Открыть тикет",emoji="🎫",style=discord.ButtonStyle.link,url=ticket_channel.jump_url))
+    await inbox.send(embed=embed,view=view)
 
 
 def can_close_ticket(member,channel):
@@ -1570,6 +1605,10 @@ async def on_ready():
         if changed:
             print(f"{guild.name}: Default League выдана {changed} зарегистрированным",flush=True)
         await ensure_admin_panel_channel_name(guild)
+        try:
+            await ensure_ticket_inbox(guild)
+        except discord.HTTPException as exc:
+            print(f"{guild.name}: ticket inbox error: {exc!r}",flush=True)
         ticket_updates=await ensure_ticket_close_buttons(guild)
         if ticket_updates:
             print(f"{guild.name}: панель тикетов обновлена в {ticket_updates} каналах",flush=True)
@@ -1970,7 +2009,7 @@ async def setup(interaction:discord.Interaction):
     admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
     for target,overwrite in admin_overwrites.items(): await admin.set_permissions(target,overwrite=overwrite)
     await ensure_admin_panel_channel_name(g)
-    staff_text_names=("💬・штаб-команды","🎛️・панель-админа","⚠️・центр-санкций","🧾・архив-доказательств","✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота")
+    staff_text_names=("💬・штаб-команды","🎛️・панель-админа","🎫・входящие-тикеты","⚠️・центр-санкций","🧾・архив-доказательств","✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота")
     await sync_channels(admin,text_names=staff_text_names,voice_names=("🔊 Штабной голос",))
     staff_channels={name:await text(admin,name,overwrites=admin_overwrites) for name in staff_text_names}
     if not discord.utils.get(admin.voice_channels,name="🔊 Штабной голос"):

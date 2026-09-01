@@ -362,8 +362,9 @@ class QueueView(discord.ui.View):
     @discord.ui.button(label="Выйти", emoji="✖️", style=discord.ButtonStyle.secondary, custom_id="queue:leave")
     async def leave(self, interaction, button):
         if interaction.user.voice and is_lobby(interaction.user.voice.channel):
+            await interaction.response.defer(ephemeral=True,thinking=True)
             await interaction.user.move_to(None)
-            await interaction.response.send_message("Ты вышел из очереди.", ephemeral=True)
+            await interaction.followup.send("Ты вышел из очереди.", ephemeral=True)
         else:
             await interaction.response.send_message("Ты сейчас не в очереди.", ephemeral=True)
 
@@ -394,8 +395,9 @@ class RoomPanel(discord.ui.View):
         if not ch: return
         current = ch.overwrites_for(interaction.guild.default_role)
         current.connect = not (current.connect is False)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await ch.set_permissions(interaction.guild.default_role, overwrite=current)
-        await interaction.response.send_message("Доступ комнаты переключён.", ephemeral=True)
+        await interaction.followup.send("Доступ комнаты переключён.", ephemeral=True)
 
     @discord.ui.button(emoji="👥", label="Лимит", style=discord.ButtonStyle.secondary, custom_id="room:limit")
     async def limit(self, interaction, button):
@@ -408,8 +410,9 @@ class RoomPanel(discord.ui.View):
         if not ch: return
         ow = ch.overwrites_for(interaction.guild.default_role)
         ow.view_channel = not (ow.view_channel is False)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await ch.set_permissions(interaction.guild.default_role, overwrite=ow)
-        await interaction.response.send_message("Видимость комнаты переключена.", ephemeral=True)
+        await interaction.followup.send("Видимость комнаты переключена.", ephemeral=True)
 
 
 class RenameRoom(discord.ui.Modal, title="Название комнаты"):
@@ -417,8 +420,9 @@ class RenameRoom(discord.ui.Modal, title="Название комнаты"):
     def __init__(self, channel):
         super().__init__(); self.channel = channel
     async def on_submit(self, interaction):
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await self.channel.edit(name=str(self.name))
-        await interaction.response.send_message("Название изменено.", ephemeral=True)
+        await interaction.followup.send("Название изменено.", ephemeral=True)
 
 
 class RoomLimit(discord.ui.Modal, title="Лимит комнаты"):
@@ -429,8 +433,9 @@ class RoomLimit(discord.ui.Modal, title="Лимит комнаты"):
         try: value = max(0, min(99, int(str(self.limit))))
         except ValueError:
             return await interaction.response.send_message("Нужно указать число.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await self.channel.edit(user_limit=value)
-        await interaction.response.send_message(f"Лимит: {value or 'без ограничений'}.", ephemeral=True)
+        await interaction.followup.send(f"Лимит: {value or 'без ограничений'}.", ephemeral=True)
 
 
 def registration_embed(member=None):
@@ -457,6 +462,7 @@ class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
         owner=db.game_id_owner(value)
         if owner and (owner["guild_id"]!=interaction.guild_id or owner["user_id"]!=interaction.user.id):
             return await interaction.response.send_message("❌ Этот Standoff 2 ID уже занят. Если это твой старый профиль, используй кнопку **Войти по данным**.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         db.set_registration(interaction.guild_id,interaction.user.id,nickname,value)
         try: await interaction.user.edit(nick=nickname,reason="SEOR: игровой ник при регистрации")
         except discord.Forbidden: pass
@@ -467,9 +473,9 @@ class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
         try:
             await interaction.user.add_roles(role,roles["league_default"],reason="SEOR: регистрация и вход в Default League")
         except discord.Forbidden:
-            return await interaction.response.send_message("Профиль сохранён, но роли не выданы. Подними роль бота выше ролей `зарегистрирован` и `default League`.",ephemeral=True)
+            return await interaction.followup.send("Профиль сохранён, но роли не выданы. Подними роль бота выше ролей `зарегистрирован` и `default League`.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
-        await interaction.response.send_message(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}** · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
+        await interaction.followup.send(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}** · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
 
 
 class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
@@ -484,6 +490,7 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
         profile=db.restore_registration(interaction.guild_id,interaction.user.id,nickname,game_id)
         if not profile:
             return await interaction.response.send_message("❌ Профиль с таким ником и Standoff 2 ID не найден. Проверь данные или пройди новую регистрацию.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         try: await interaction.user.edit(nick=profile["nickname"],reason="SEOR: восстановление игрового профиля")
         except discord.Forbidden: pass
         roles=await ensure_staff_roles(interaction.guild)
@@ -493,9 +500,9 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
         try:
             await interaction.user.add_roles(role,roles["league_default"],reason="SEOR: вход по данным и Default League")
         except discord.Forbidden:
-            return await interaction.response.send_message("Профиль восстановлен, но роли не выданы. Подними роль бота выше ролей `зарегистрирован` и `default League`.",ephemeral=True)
+            return await interaction.followup.send("Профиль восстановлен, но роли не выданы. Подними роль бота выше ролей `зарегистрирован` и `default League`.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
-        await interaction.response.send_message(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
+        await interaction.followup.send(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
 
 
 class RegistrationView(discord.ui.View):
@@ -818,8 +825,9 @@ class DashboardPanelView(discord.ui.View):
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
             return await i.response.send_message("Создавать роли может только владелец сервера или Owner.",ephemeral=True)
+        await i.response.defer(ephemeral=True,thinking=True)
         await ensure_staff_roles(i.guild)
-        await i.response.send_message("Служебные роли созданы и синхронизированы.",ephemeral=True)
+        await i.followup.send("Служебные роли созданы и синхронизированы.",ephemeral=True)
 
 
 class StaffMemberSelect(discord.ui.UserSelect):
@@ -973,8 +981,11 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
         except ValueError: member=None
         if not member: return await interaction.response.send_message("Участник не найден.",ephemeral=True)
         action=str(self.action).strip().lower(); reason=str(self.reason).strip()
+        if action not in {"warn","предупреждение","timeout","kick","ban"}:
+            return await interaction.response.send_message("Действие: `warn`, `timeout`, `kick` или `ban`.",ephemeral=True)
         if action not in {"warn", "предупреждение", "timeout"} and not can_administer(interaction.user):
             return await interaction.response.send_message("Все стафф-роли могут выдавать только `warn` и `timeout`. Kick и ban доступны старшей администрации.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
         try:
             if action in {"warn","предупреждение"}:
                 try: await member.send(f"⚠️ Предупреждение на **{interaction.guild.name}**: {reason}")
@@ -984,11 +995,10 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
                 await member.timeout(timedelta(minutes=minutes),reason=reason)
             elif action=="kick": await member.kick(reason=reason)
             elif action=="ban": await member.ban(reason=reason,delete_message_seconds=0)
-            else: return await interaction.response.send_message("Действие: `warn`, `timeout`, `kick` или `ban`.",ephemeral=True)
         except (discord.Forbidden,discord.HTTPException,ValueError):
-            return await interaction.response.send_message("Не удалось применить санкцию. Проверь права и длительность.",ephemeral=True)
+            return await interaction.followup.send("Не удалось применить санкцию. Проверь права и длительность.",ephemeral=True)
         await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применена",f"Участник: {member.mention}\nДействие: **{action}**\nПричина: {reason}\nАдминистратор: {interaction.user.mention}",discord.Color.orange())
-        await interaction.response.send_message(f"✅ Санкция **{action}** применена к {member.mention}.",ephemeral=True)
+        await interaction.followup.send(f"✅ Санкция **{action}** применена к {member.mention}.",ephemeral=True)
 
 
 class MatchAdminModal(discord.ui.Modal,title="Управление матчем"):
@@ -1007,9 +1017,10 @@ class MatchAdminModal(discord.ui.Modal,title="Управление матчем"
             a,b=[int(x) for x in str(self.score).replace("-",":").split(":",1)]
             assert (a==13 or b==13) and a!=b
         except Exception: return await interaction.response.send_message("Укажи корректный счёт, например `13:9`.",ephemeral=True)
-        if not db.finish_match(match_id,a,b): return await interaction.response.send_message("Матч уже завершён.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        if not db.finish_match(match_id,a,b): return await interaction.followup.send("Матч уже завершён.",ephemeral=True)
         await send_staff_log(interaction.guild,"журнал-матчей","🎮 Матч завершён",f"Матч **#{match_id}** · счёт **{a}:{b}** · администратор {interaction.user.mention}",discord.Color.green())
-        await interaction.response.send_message(f"✅ Матч #{match_id} завершён: **{a}:{b}**.",ephemeral=True)
+        await interaction.followup.send(f"✅ Матч #{match_id} завершён: **{a}:{b}**.",ephemeral=True)
 
 
 class CloseTicketModal(discord.ui.Modal,title="Закрыть тикет"):
@@ -1021,8 +1032,9 @@ class CloseTicketModal(discord.ui.Modal,title="Закрыть тикет"):
         if not channel or not (channel.topic or "").startswith("ticket-owner:"):
             return await interaction.response.send_message("Канал тикета не найден.",ephemeral=True)
         name=channel.name
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await send_staff_log(interaction.guild,"журнал-тикетов","🔒 Тикет закрыт",f"Канал: **{name}**\nПричина: {str(self.reason) or 'не указана'}\nЗакрыл: {interaction.user.mention}")
-        await interaction.response.send_message(f"Тикет **{name}** закрыт.",ephemeral=True)
+        await interaction.followup.send(f"Тикет **{name}** закрыт.",ephemeral=True)
         await channel.delete(reason=f"SEOR ticket closed by {interaction.user}")
 
 
@@ -1077,20 +1089,22 @@ class TicketTypeSelect(discord.ui.Select):
         super().__init__(placeholder="Выбери раздел обращения",options=options,custom_id="ticket:type",min_values=1,max_values=1)
 
     async def callback(self, interaction):
+        await interaction.response.defer(ephemeral=True,thinking=True)
         key=self.values[0]
         emoji,title,description,staff_keys=self.TICKET_TYPES[key]
         guild=interaction.guild
         staff_roles=await ensure_staff_roles(guild)
         existing=next((c for c in guild.text_channels if (c.topic or "").startswith(f"ticket-owner:{interaction.user.id}")),None)
         if existing:
-            return await interaction.response.send_message(f"У тебя уже есть открытый тикет: {existing.mention}",ephemeral=True)
+            return await interaction.followup.send(f"У тебя уже есть открытый тикет: {existing.mention}",ephemeral=True)
         category=discord.utils.get(guild.categories,name="🎫 TICKETS") or await guild.create_category("🎫 TICKETS")
         overwrites={
             guild.default_role:discord.PermissionOverwrite(view_channel=False),
             interaction.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,attach_files=True,read_message_history=True),
             guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True,manage_messages=True),
         }
-        for staff_key in staff_keys:
+        oversight_keys=("owner","developer","director","head_admin")
+        for staff_key in dict.fromkeys((*staff_keys,*oversight_keys)):
             role=staff_roles.get(staff_key)
             if role:
                 overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
@@ -1105,7 +1119,7 @@ class TicketTypeSelect(discord.ui.Select):
         control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или сотрудник администрации может закрыть тикет кнопкой ниже.",color=discord.Color.red())
         await channel.send(embed=control,view=TicketChannelView())
         await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
-        await interaction.response.send_message(f"Тикет создан: {channel.mention}",ephemeral=True)
+        await interaction.followup.send(f"Тикет создан: {channel.mention}",ephemeral=True)
 
 
 class TicketView(discord.ui.View):
@@ -1124,6 +1138,43 @@ def ticket_owner_id(channel):
         return None
 
 
+def ticket_type_key(channel):
+    parts=(channel.topic or "").split(":")
+    return parts[2] if len(parts)>=3 and parts[0]=="ticket-owner" else None
+
+
+def ticket_claimed_by(channel):
+    parts=(channel.topic or "").split(":")
+    if "claimed" not in parts:
+        return None
+    try:
+        return int(parts[parts.index("claimed")+1])
+    except (ValueError,IndexError):
+        return None
+
+
+def staff_role_name(key):
+    if key in STAFF_ROLES:
+        return STAFF_ROLES[key]
+    spec=EXTRA_ROLE_SPECS.get(key)
+    return spec[0] if spec else None
+
+
+TICKET_CLAIM_ROLES={
+    "cheats": ("head_ac","anticheat"),
+    "player": ("ticket_admin","moderator"),
+    "match": ("games_admin","curator_qualifications","curator_division","curator_pro"),
+    "staff": ("head_admin",),
+    "appeal": ("ticket_admin",),
+    "other": ("ticket_admin",),
+}
+
+
+def can_claim_ticket(member,channel):
+    keys=TICKET_CLAIM_ROLES.get(ticket_type_key(channel),())
+    return any((name:=staff_role_name(key)) and has_role(member,name) for key in keys)
+
+
 def can_close_ticket(member,channel):
     owner_id=ticket_owner_id(channel)
     return owner_id==member.id or is_staff_member(member)
@@ -1139,8 +1190,9 @@ class CloseCurrentTicketModal(discord.ui.Modal,title="Закрытие тике�
         if not can_close_ticket(interaction.user,channel):
             return await interaction.response.send_message("Закрыть тикет может его автор или сотрудник администрации.",ephemeral=True)
         reason=str(self.reason).strip() or "не указана"
+        await interaction.response.defer(ephemeral=True,thinking=True)
         await send_staff_log(interaction.guild,"журнал-тикетов","🔒 Тикет закрыт",f"Канал: **{channel.name}**\nПричина: {reason}\nЗакрыл: {interaction.user.mention}")
-        await interaction.response.send_message("Тикет закрывается…",ephemeral=True)
+        await interaction.followup.send("Тикет закрывается…",ephemeral=True)
         await asyncio.sleep(1)
         try:
             await channel.delete(reason=f"SEOR FACEIT ticket closed by {interaction.user}: {reason}")
@@ -1149,8 +1201,30 @@ class CloseCurrentTicketModal(discord.ui.Modal,title="Закрытие тике�
 
 
 class TicketChannelView(discord.ui.View):
-    def __init__(self):
+    def __init__(self,claimed=False):
         super().__init__(timeout=None)
+        if claimed:
+            self.claim_ticket.disabled=True
+            self.claim_ticket.label="Тикет уже взят"
+
+    @discord.ui.button(label="Взять тикет",emoji="🙋",style=discord.ButtonStyle.success,custom_id="ticket:claim:button")
+    async def claim_ticket(self,interaction,button):
+        channel=interaction.channel
+        if not isinstance(channel,discord.TextChannel) or ticket_owner_id(channel) is None:
+            return await interaction.response.send_message("Эта кнопка работает только внутри тикета.",ephemeral=True)
+        claimed_by=ticket_claimed_by(channel)
+        if claimed_by:
+            return await interaction.response.send_message(f"Тикет уже взял <@{claimed_by}>.",ephemeral=True)
+        if not can_claim_ticket(interaction.user,channel):
+            return await interaction.response.send_message("Этот тип тикета может взять только профильная роль поддержки.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        topic=(channel.topic or "").split(":claimed:",1)[0]+f":claimed:{interaction.user.id}"
+        try:
+            await channel.edit(topic=topic,reason=f"SEOR FACEIT ticket claimed by {interaction.user}")
+            await channel.send(embed=discord.Embed(title="🙋 Тикет взят в работу",description=f"Ответственный: {interaction.user.mention}",color=discord.Color.green()))
+            await interaction.followup.send("Ты взял этот тикет в работу.",ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("Не удалось закрепить тикет: боту нужно право `Управлять каналами`.",ephemeral=True)
 
     @discord.ui.button(label="Закрыть тикет",emoji="🔒",style=discord.ButtonStyle.danger,custom_id="ticket:close:button")
     async def close_ticket(self,interaction,button):
@@ -1162,25 +1236,29 @@ class TicketChannelView(discord.ui.View):
 
 
 async def ensure_ticket_close_buttons(guild):
-    """Добавить кнопку только в старые тикеты, где панели закрытия ещё нет."""
+    """Добавить или обновить панель только в тикетах, где нет кнопки «Взять тикет»."""
     changed=0
     for channel in guild.text_channels:
         if ticket_owner_id(channel) is None:
             continue
-        found=False
+        control_message=None
         try:
             async for message in channel.history(limit=30):
                 if message.author==guild.me and any(embed.title=="🔒 Управление тикетом" for embed in message.embeds):
-                    found=True
+                    control_message=message
                     break
         except discord.HTTPException:
             continue
-        if found:
-            continue
-        control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или сотрудник администрации может закрыть тикет кнопкой ниже.",color=discord.Color.red())
+        control=discord.Embed(title="🔒 Управление тикетом",description="Профильный сотрудник может взять тикет в работу. Автор или администрация могут закрыть его.",color=discord.Color.red())
         try:
-            await channel.send(embed=control,view=TicketChannelView())
-            changed+=1
+            if control_message:
+                component_ids={getattr(child,"custom_id",None) for row in control_message.components for child in getattr(row,"children",())}
+                if "ticket:claim:button" not in component_ids:
+                    await control_message.edit(embed=control,view=TicketChannelView(claimed=bool(ticket_claimed_by(channel))))
+                    changed+=1
+            else:
+                await channel.send(embed=control,view=TicketChannelView(claimed=bool(ticket_claimed_by(channel))))
+                changed+=1
         except discord.HTTPException:
             pass
     return changed
@@ -1468,6 +1546,21 @@ async def give_default_league_to_registered(guild):
     return changed
 
 
+async def ensure_admin_panel_channel_name(guild):
+    """Точечно переименовать старый канал панели без создания копии."""
+    old_name="⌨️・команды-штаба"
+    new_name="🎛️・панель-админа"
+    existing=discord.utils.get(guild.text_channels,name=new_name)
+    old_channel=discord.utils.get(guild.text_channels,name=old_name)
+    if existing or not old_channel:
+        return existing or old_channel
+    try:
+        await old_channel.edit(name=new_name,reason="SEOR FACEIT: новое название панели администратора")
+    except discord.Forbidden:
+        return old_channel
+    return old_channel
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} ready")
@@ -1476,9 +1569,10 @@ async def on_ready():
         changed=await give_default_league_to_registered(guild)
         if changed:
             print(f"{guild.name}: Default League выдана {changed} зарегистрированным",flush=True)
+        await ensure_admin_panel_channel_name(guild)
         ticket_updates=await ensure_ticket_close_buttons(guild)
         if ticket_updates:
-            print(f"{guild.name}: кнопка закрытия добавлена в {ticket_updates} тикетов",flush=True)
+            print(f"{guild.name}: панель тикетов обновлена в {ticket_updates} каналах",flush=True)
 
 
 @bot.event
@@ -1538,10 +1632,11 @@ async def on_interaction(interaction):
         allowed=can_administer(interaction.user) or (match_data and curator_league(interaction.user)==str(match_data["league"]).lower())
         if not allowed:
             return await interaction.response.send_message("Подтверждать игру может Admin, Owner или куратор этой лиги.", ephemeral=True)
+        await interaction.response.defer()
         approved = cid.startswith("result:approve:")
         if approved:
             if not db.finish_match(sub["match_id"], sub["score_a"], sub["score_b"]):
-                return await interaction.response.send_message("Матч уже завершён или не найден.", ephemeral=True)
+                return await interaction.followup.send("Матч уже завершён или не найден.", ephemeral=True)
             db.review_submission(submission_id, "approved", interaction.user.id)
             try:
                 analysis=json.loads(sub.get("analysis_json") or "{}")
@@ -1562,7 +1657,7 @@ async def on_interaction(interaction):
         embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         embed.color = clr
         embed.description = (embed.description or "") + f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.message.edit(embed=embed, view=None)
 
 
 async def delete_empty_match_room(channel):
@@ -1874,7 +1969,8 @@ async def setup(interaction:discord.Interaction):
         admin_overwrites[staff_roles[staff_key]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
     admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
     for target,overwrite in admin_overwrites.items(): await admin.set_permissions(target,overwrite=overwrite)
-    staff_text_names=("💬・штаб-команды","⌨️・команды-штаба","⚠️・центр-санкций","🧾・архив-доказательств","✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота")
+    await ensure_admin_panel_channel_name(g)
+    staff_text_names=("💬・штаб-команды","🎛️・панель-админа","⚠️・центр-санкций","🧾・архив-доказательств","✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота")
     await sync_channels(admin,text_names=staff_text_names,voice_names=("🔊 Штабной голос",))
     staff_channels={name:await text(admin,name,overwrites=admin_overwrites) for name in staff_text_names}
     if not discord.utils.get(admin.voice_channels,name="🔊 Штабной голос"):
@@ -1887,12 +1983,12 @@ async def setup(interaction:discord.Interaction):
     await registration.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
     for curator_key in ("curator_qualifications","curator_division","curator_pro"):
         await registration.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,read_message_history=True)
-    staff_commands=staff_channels["⌨️・команды-штаба"]
+    staff_commands=staff_channels["🎛️・панель-админа"]
     async for old_message in staff_commands.history(limit=20):
         if old_message.author==g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    panel=discord.Embed(title="🛡️ SEOR CONTROL DESK",description="Рабочая панель администрации. Все действия выполняются кнопками ниже и записываются в журналы.",color=color())
+    panel=discord.Embed(title="🎛️ ПАНЕЛЬ АДМИНА",description="Рабочая панель администрации. Все действия выполняются кнопками ниже и записываются в журналы.",color=color())
     panel.add_field(name="⚖️ Модерация",value="`Санкции` — warn, timeout, kick, ban\n`Роли` — выдача и снятие ролей",inline=True)
     panel.add_field(name="🎮 Матчи",value="`Матчи` — информация и завершение\n`Результаты` — каналы проверки",inline=True)
     panel.add_field(name="📡 Аудит и поддержка",value="`Тикеты` — список открытых\n`Закрыть тикет` • `Аудит`",inline=True)
@@ -1934,12 +2030,13 @@ async def league_role_command(interaction:discord.Interaction,member:discord.Mem
     role_key=f"league_{league.value}"
     if role_key not in allowed_role_keys(interaction.user):
         return await interaction.response.send_message("По иерархии персонала ты не можешь управлять этой ролью лиги.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
     roles=await ensure_staff_roles(interaction.guild)
     role=roles.get(role_key)
     if not role:
-        return await interaction.response.send_message("Роль лиги не найдена. Владелец должен один раз выполнить `/setup`.",ephemeral=True)
+        return await interaction.followup.send("Роль лиги не найдена. Владелец должен один раз выполнить `/setup`.",ephemeral=True)
     if role >= interaction.guild.me.top_role:
-        return await interaction.response.send_message("Discord блокирует выдачу: владелец сервера должен поднять роль бота выше ролей лиг в настройках ролей.",ephemeral=True)
+        return await interaction.followup.send("Discord блокирует выдачу: владелец сервера должен поднять роль бота выше ролей лиг в настройках ролей.",ephemeral=True)
     try:
         if action.value=="give":
             await member.add_roles(role,reason=f"SEOR FACEIT /league_role by {interaction.user}")
@@ -1948,8 +2045,8 @@ async def league_role_command(interaction:discord.Interaction,member:discord.Mem
             await member.remove_roles(role,reason=f"SEOR FACEIT /league_role by {interaction.user}")
             text=f"{role.mention} снята с участника {member.mention}."
     except discord.Forbidden:
-        return await interaction.response.send_message("Discord не разрешил изменить роль. Проверь право бота `Управлять ролями` и поставь роль бота выше ролей лиг.",ephemeral=True)
-    await interaction.response.send_message(text,ephemeral=True)
+        return await interaction.followup.send("Discord не разрешил изменить роль. Проверь право бота `Управлять ролями` и поставь роль бота выше ролей лиг.",ephemeral=True)
+    await interaction.followup.send(text,ephemeral=True)
 
 
 @bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
@@ -2085,15 +2182,16 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
         return await interaction.response.send_message("Ник должен содержать от 2 до 32 символов.",ephemeral=True)
     if member.id==interaction.guild.owner_id:
         return await interaction.response.send_message("Discord не разрешает боту менять ник владельца сервера.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
     try:
         await member.edit(nick=nickname,reason=f"SEOR /set_nickname by {interaction.user}")
     except discord.Forbidden:
-        return await interaction.response.send_message("Не удалось изменить ник. Подними роль бота выше роли этого участника и выдай право **Manage Nicknames**.",ephemeral=True)
+        return await interaction.followup.send("Не удалось изменить ник. Подними роль бота выше роли этого участника и выдай право **Manage Nicknames**.",ephemeral=True)
     except discord.HTTPException:
-        return await interaction.response.send_message("Discord не принял новый ник. Проверь символы и попробуй ещё раз.",ephemeral=True)
+        return await interaction.followup.send("Discord не принял новый ник. Проверь символы и попробуй ещё раз.",ephemeral=True)
     db.set_nickname(interaction.guild_id,member.id,nickname)
     await send_staff_log(interaction.guild,"общий-журнал","✏️ Изменён ник участника",f"Участник: {member.mention}\nНовый ник: **{nickname}**\nИзменил: {interaction.user.mention}",discord.Color.blue())
-    await interaction.response.send_message(f"✅ Ник участника {member.mention} изменён на **{nickname}**.",ephemeral=True)
+    await interaction.followup.send(f"✅ Ник участника {member.mention} изменён на **{nickname}**.",ephemeral=True)
 
 
 @bot.tree.command(name="admin_result",description="Вручную зарегистрировать результат")
@@ -2103,12 +2201,13 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
 async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,score_b:int):
     if not ((score_a == 13 or score_b == 13) and score_a != score_b and min(score_a,score_b) >= 0):
         return await interaction.response.send_message("Некорректный счёт: одна команда должна иметь 13.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
     if not db.finish_match(match_id,score_a,score_b):
-        return await interaction.response.send_message("Матч уже завершён или не найден.",ephemeral=True)
+        return await interaction.followup.send("Матч уже завершён или не найден.",ephemeral=True)
     history=next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")),None)
     if history:
         await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
-    await interaction.response.send_message(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
+    await interaction.followup.send(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
 
 
 @bot.tree.command(name="matches",description="Показать последние матчи карточкой")

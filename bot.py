@@ -499,18 +499,11 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
 
 
 class RegistrationView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Регистрация",emoji="⚡",style=discord.ButtonStyle.success,custom_id="seor:registration:start")
-    async def register(self,interaction,button):
-        if has_role(interaction.user,REGISTERED_ROLE_NAME):
-            return await interaction.response.send_message("Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд.",ephemeral=True)
-        await interaction.response.send_modal(GameIdModal())
-
-    @discord.ui.button(label="Войти по данным",emoji="🔑",style=discord.ButtonStyle.primary,custom_id="seor:registration:login")
-    async def login(self,interaction,button):
-        if has_role(interaction.user,REGISTERED_ROLE_NAME):
-            return await interaction.response.send_message("Ты уже вошёл в профиль SEOR.",ephemeral=True)
-        await interaction.response.send_modal(LoginByDataModal())
+    """Постоянные кнопки; обработка выполняется централизованно в on_interaction."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(label="Регистрация",emoji="⚡",style=discord.ButtonStyle.success,custom_id="seor:registration:start"))
+        self.add_item(discord.ui.Button(label="Войти по данным",emoji="🔑",style=discord.ButtonStyle.primary,custom_id="seor:registration:login"))
 
 
 def match_ocr_players(guild,match,analysis):
@@ -1487,6 +1480,18 @@ async def on_member_join(member):
 async def on_interaction(interaction):
     if interaction.type != discord.InteractionType.component: return
     cid=interaction.data.get("custom_id","")
+    if cid in {"seor:registration:start","seor:registration:login"}:
+        try:
+            if has_role(interaction.user,REGISTERED_ROLE_NAME):
+                message="Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд." if cid.endswith(":start") else "Ты уже вошёл в профиль SEOR."
+                return await interaction.response.send_message(message,ephemeral=True)
+            modal=GameIdModal() if cid.endswith(":start") else LoginByDataModal()
+            return await interaction.response.send_modal(modal)
+        except Exception as exc:
+            print(f"Registration button error: {exc!r}",flush=True)
+            if not interaction.response.is_done():
+                return await interaction.response.send_message("Не удалось открыть форму регистрации. Ошибка записана в Railway Logs.",ephemeral=True)
+            return
     if cid.startswith("party:accept:") or cid.startswith("party:decline:"):
         _,action,party_id,target_id=cid.split(":")
         if interaction.user.id!=int(target_id):

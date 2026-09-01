@@ -67,9 +67,15 @@ EXTRA_ROLE_SPECS = {
     "sponsor": ("₽", 0x00FF55, {}),
     "pro_lead": ("head of pro League", 0xC026D3, {"manage_messages": True, "move_members": True}),
     "premium": ("Premium", 0x0EA5E9, {}),
-    "all_warn": ("ALL warn", 0xDC2626, {}),
-    "anticheat_warn": ("anticheat warn", 0x2563EB, {}),
-    "admin_warn": ("admin warn", 0xF97316, {}),
+    "all_warn_1": ("ALL warn 1/3", 0xF87171, {}),
+    "all_warn_2": ("ALL warn 2/3", 0xEF4444, {}),
+    "all_warn_3": ("ALL warn 3/3", 0xB91C1C, {}),
+    "anticheat_warn_1": ("anticheat warn 1/3", 0x60A5FA, {}),
+    "anticheat_warn_2": ("anticheat warn 2/3", 0x2563EB, {}),
+    "anticheat_warn_3": ("anticheat warn 3/3", 0x1D4ED8, {}),
+    "admin_warn_1": ("admin warn 1/3", 0xFDBA74, {}),
+    "admin_warn_2": ("admin warn 2/3", 0xF97316, {}),
+    "admin_warn_3": ("admin warn 3/3", 0xC2410C, {}),
     "warn_pro_1": ("1/3 pro warn", 0xFB7185, {}),
     "warn_pro_2": ("2/3 pro warn", 0xFB7185, {}),
     "warn_pro_3": ("3/3 pro warn", 0xEF4444, {}),
@@ -999,14 +1005,31 @@ async def send_staff_log(guild,channel_suffix,title,description,log_color=None):
         except discord.HTTPException: pass
 
 
+def find_punishment_channel(guild):
+    for channel in guild.text_channels:
+        compact="".join(char for char in channel.name.casefold() if char.isalnum())
+        if "наказан" in compact or "punishment" in compact or "sanction" in compact:
+            return channel
+    return None
+
+
 async def send_punishment_log(guild,title,description,log_color=None):
-    channel=next((c for c in guild.text_channels if "наказан" in normalized_role_name(c.name)),None)
-    if channel:
+    channel=find_punishment_channel(guild)
+    if not channel:
+        print(f"{guild.name}: punishment channel not found",flush=True)
+        return False
+    embed=discord.Embed(title=title,description=description,color=log_color or discord.Color.orange(),timestamp=datetime.now(timezone.utc))
+    try:
+        await channel.send(embed=embed)
+        return True
+    except (discord.Forbidden,discord.HTTPException) as exc:
+        print(f"{guild.name}: punishment embed log failed in {channel.name}: {exc!r}",flush=True)
         try:
-            embed=discord.Embed(title=title,description=description,color=log_color or discord.Color.orange(),timestamp=datetime.now(timezone.utc))
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            pass
+            await channel.send(f"**{title}**\n{description}")
+            return True
+        except (discord.Forbidden,discord.HTTPException) as fallback_exc:
+            print(f"{guild.name}: punishment text log failed in {channel.name}: {fallback_exc!r}",flush=True)
+            return False
 
 
 class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
@@ -1052,8 +1075,10 @@ WARN_TIER_KEYS={
     "qualifications":("warn_qual_1","warn_qual_2","warn_qual_3"),
     "pro":("warn_pro_1","warn_pro_2","warn_pro_3"),
     "division":("warn_div_1","warn_div_2","warn_div_3"),
+    "anticheat":("anticheat_warn_1","anticheat_warn_2","anticheat_warn_3"),
+    "all":("all_warn_1","all_warn_2","all_warn_3"),
+    "admin":("admin_warn_1","admin_warn_2","admin_warn_3"),
 }
-WARN_SPECIAL_KEYS={"anticheat":"anticheat_warn","all":"all_warn","admin":"admin_warn"}
 
 
 def find_default_warn_roles(guild):
@@ -1117,23 +1142,18 @@ class WarnReasonModal(discord.ui.Modal,title="Выдать варн"):
         await interaction.response.defer(ephemeral=True,thinking=True)
         roles=await ensure_staff_roles(interaction.guild)
         role=None; old_roles=[]
-        if self.warn_type in WARN_SPECIAL_KEYS:
-            role=roles.get(WARN_SPECIAL_KEYS[self.warn_type])
-            if role in member.roles:
-                return await interaction.followup.send(f"У участника уже есть роль **{role.name}**.",ephemeral=True)
+        if self.warn_type=="default":
+            tier_roles=find_default_warn_roles(interaction.guild)
         else:
-            if self.warn_type=="default":
-                tier_roles=find_default_warn_roles(interaction.guild)
-            else:
-                tier_roles=[roles.get(key) for key in WARN_TIER_KEYS[self.warn_type]]
-            if not all(tier_roles):
-                return await interaction.followup.send("Не найдены роли 1/3, 2/3 и 3/3 для этого варна. Проверь их названия на сервере.",ephemeral=True)
-            current=max((index for index,item in enumerate(tier_roles) if item in member.roles),default=-1)
-            next_index=min(current+1,2)
-            if current==2:
-                return await interaction.followup.send(f"У участника уже максимальный варн **{tier_roles[2].name}**.",ephemeral=True)
-            role=tier_roles[next_index]
-            old_roles=[item for item in tier_roles if item in member.roles and item!=role]
+            tier_roles=[roles.get(key) for key in WARN_TIER_KEYS[self.warn_type]]
+        if not all(tier_roles):
+            return await interaction.followup.send("Не найдены роли 1/3, 2/3 и 3/3 для этого варна. Проверь их названия на сервере.",ephemeral=True)
+        current=max((index for index,item in enumerate(tier_roles) if item in member.roles),default=-1)
+        next_index=min(current+1,2)
+        if current==2:
+            return await interaction.followup.send(f"У участника уже максимальный варн **{tier_roles[2].name}**.",ephemeral=True)
+        role=tier_roles[next_index]
+        old_roles=[item for item in tier_roles if item in member.roles and item!=role]
         if not role:
             return await interaction.followup.send("Роль выбранного варна не найдена.",ephemeral=True)
         if role >= interaction.guild.me.top_role:
@@ -1208,8 +1228,7 @@ def warning_roles_for_type(guild,warn_type,roles):
         return [role for role in find_default_warn_roles(guild) if role]
     if warn_type in WARN_TIER_KEYS:
         return [roles.get(key) for key in WARN_TIER_KEYS[warn_type] if roles.get(key)]
-    special_key=WARN_SPECIAL_KEYS.get(warn_type)
-    return [roles[special_key]] if special_key and roles.get(special_key) else []
+    return []
 
 
 def can_remove_sanction_type(member,action):
@@ -1920,12 +1939,31 @@ async def setup_hook():
 
 async def ensure_special_warn_roles(guild):
     created=0
-    for key in ("all_warn","anticheat_warn","admin_warn"):
+    migrations={
+        "ALL warn":"all_warn_1",
+        "anticheat warn":"anticheat_warn_1",
+        "admin warn":"admin_warn_1",
+    }
+    for old_name,first_key in migrations.items():
+        old_role=find_role(guild,old_name)
+        first_name=EXTRA_ROLE_SPECS[first_key][0]
+        first_role=find_role(guild,first_name)
+        if old_role and not first_role:
+            try:
+                await old_role.edit(name=first_name,reason="SEOR FACEIT: перенос варна в систему 1/3")
+            except discord.Forbidden:
+                pass
+    tier_keys=(
+        "all_warn_1","all_warn_2","all_warn_3",
+        "anticheat_warn_1","anticheat_warn_2","anticheat_warn_3",
+        "admin_warn_1","admin_warn_2","admin_warn_3",
+    )
+    for key in tier_keys:
         name,color_value,permission_values=EXTRA_ROLE_SPECS[key]
         if find_role(guild,name):
             continue
         try:
-            await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions(**permission_values),hoist=True,reason="SEOR FACEIT: роль варна")
+            await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions(**permission_values),hoist=True,reason="SEOR FACEIT: роль варна 1/3")
             created+=1
         except discord.Forbidden:
             pass
@@ -2106,7 +2144,7 @@ async def apply_public_readonly_channels(guild):
             changed+=await merge_channel_permissions(channel,registered,view_channel=True,read_message_history=True,**readonly)
         for role in disallowed_roles:
             changed+=await merge_channel_permissions(channel,role,view_channel=True,read_message_history=True,**readonly)
-        changed+=await merge_channel_permissions(channel,guild.me,view_channel=True,read_message_history=True,send_messages=True,add_reactions=True,send_messages_in_threads=True)
+        changed+=await merge_channel_permissions(channel,guild.me,view_channel=True,read_message_history=True,send_messages=True,embed_links=True,attach_files=True,add_reactions=True,send_messages_in_threads=True)
         for role in allowed_roles:
             changed+=await merge_channel_permissions(channel,role,view_channel=True,read_message_history=True,send_messages=True,add_reactions=True,create_public_threads=True,send_messages_in_threads=True)
     return changed

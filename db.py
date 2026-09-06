@@ -74,11 +74,12 @@ def set_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
     with connect() as con:
         con.execute("UPDATE players SET nickname=?,game_id=? WHERE guild_id=? AND user_id=?",(nickname,game_id,guild_id,user_id))
 
-def game_id_owner(game_id:str):
+def game_id_owner(guild_id:int,game_id:str):
+    """Return the owner of a Game ID only inside one Discord server."""
     with connect() as con:
         row=con.execute(
-            "SELECT guild_id,user_id,nickname,game_id FROM players WHERE game_id=? LIMIT 1",
-            (game_id.strip(),),
+            "SELECT guild_id,user_id,nickname,game_id FROM players WHERE guild_id=? AND game_id=? LIMIT 1",
+            (guild_id,game_id.strip()),
         ).fetchone()
         return dict(row) if row else None
 
@@ -88,22 +89,21 @@ def set_nickname(guild_id:int,user_id:int,nickname:str):
         con.execute("UPDATE players SET nickname=? WHERE guild_id=? AND user_id=?",(nickname.strip(),guild_id,user_id))
 
 def restore_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
-    """Restore an existing DOMINION profile by nickname + Standoff 2 ID.
+    """Restore a profile only inside the current Discord server.
 
-    The current guild is preferred, but a profile from an older DOMINION guild can
-    also be imported. Inside the same guild the profile is moved to the current
-    Discord account so it cannot be used twice.
+    Profiles from another server never count as registration here: every new
+    server starts with its own registration and statistics.
     """
     clean_nickname=nickname.strip()
     clean_game_id=game_id.strip()
     with connect() as con:
         source=con.execute(
             """SELECT * FROM players
-               WHERE game_id=? AND nickname IS NOT NULL
+               WHERE guild_id=? AND game_id=? AND nickname IS NOT NULL
                  AND lower(trim(nickname))=lower(trim(?))
-               ORDER BY CASE WHEN guild_id=? THEN 0 ELSE 1 END, games DESC, points DESC
+               ORDER BY games DESC, points DESC
                LIMIT 1""",
-            (clean_game_id,clean_nickname,guild_id),
+            (guild_id,clean_game_id,clean_nickname),
         ).fetchone()
         if not source:
             return None
@@ -114,7 +114,7 @@ def restore_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
             "UPDATE players SET "+",".join(f"{column}=?" for column in columns)+" WHERE guild_id=? AND user_id=?",
             tuple(source[column] for column in columns)+(guild_id,user_id),
         )
-        if source["guild_id"]==guild_id and source["user_id"]!=user_id:
+        if source["user_id"]!=user_id:
             con.execute("DELETE FROM players WHERE guild_id=? AND user_id=?",(guild_id,source["user_id"]))
         source["guild_id"]=guild_id
         source["user_id"]=user_id

@@ -432,7 +432,7 @@ def registration_embed(member=None):
     first_step="Открой канал **📋・регистрация** и выбери нужную кнопку." if member else "Выбери **Регистрация** для нового профиля или **Войти по данным** для восстановления старого."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
     e.add_field(name="02  УКАЖИ ДАННЫЕ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
-    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст существующую роль **Default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
+    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роли **зарегистрирован** и **Default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
     e.set_footer(text="DOMINION CYBER • competitive platform")
     return e
 
@@ -447,9 +447,9 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
             return await interaction.response.send_message("Укажи корректный числовой Standoff 2 ID.",ephemeral=True)
         if len(nickname)<2:
             return await interaction.response.send_message("Игровой ник должен содержать минимум 2 символа.",ephemeral=True)
-        owner=db.game_id_owner(value)
-        if owner and (owner["guild_id"]!=interaction.guild_id or owner["user_id"]!=interaction.user.id):
-            return await interaction.response.send_message("❌ Этот Standoff 2 ID уже занят. Если это твой старый профиль, используй кнопку **Войти по данным**.",ephemeral=True)
+        owner=db.game_id_owner(interaction.guild_id,value)
+        if owner and owner["user_id"]!=interaction.user.id:
+            return await interaction.response.send_message("❌ Этот Standoff 2 ID уже занят участником этого сервера.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
         db.set_registration(interaction.guild_id,interaction.user.id,nickname,value)
         try: await interaction.user.edit(nick=nickname,reason="DOMINION: игровой ник при регистрации")
@@ -457,11 +457,14 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
         roles=await ensure_staff_roles(interaction.guild)
         registered_role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
         default_role=roles.get("league_default")
-        if registered_role and registered_role not in interaction.user.roles:
-            try: await interaction.user.add_roles(registered_role,reason="DOMINION: регистрация игрового профиля")
-            except discord.Forbidden: pass
+        if not registered_role:
+            return await interaction.followup.send("Профиль сохранён, но роль `зарегистрирован` не найдена. Администратору нужно выполнить `/setup`.",ephemeral=True)
         if not default_role:
             return await interaction.followup.send("Профиль сохранён, но существующая роль `Default League` не найдена на сервере.",ephemeral=True)
+        try:
+            await interaction.user.add_roles(registered_role,reason="DOMINION: регистрация игрового профиля")
+        except discord.Forbidden:
+            return await interaction.followup.send("Регистрация сохранена, но Discord не дал выдать роль `зарегистрирован`. Подними роль бота выше неё.",ephemeral=True)
         try:
             await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после регистрации")
         except discord.Forbidden:
@@ -488,11 +491,14 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
         roles=await ensure_staff_roles(interaction.guild)
         registered_role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
         default_role=roles.get("league_default")
-        if registered_role and registered_role not in interaction.user.roles:
-            try: await interaction.user.add_roles(registered_role,reason="DOMINION: восстановление регистрации")
-            except discord.Forbidden: pass
+        if not registered_role:
+            return await interaction.followup.send("Профиль восстановлен, но роль `зарегистрирован` не найдена. Администратору нужно выполнить `/setup`.",ephemeral=True)
         if not default_role:
             return await interaction.followup.send("Профиль восстановлен, но существующая роль `Default League` не найдена на сервере.",ephemeral=True)
+        try:
+            await interaction.user.add_roles(registered_role,reason="DOMINION: восстановление регистрации")
+        except discord.Forbidden:
+            return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать роль `зарегистрирован`. Подними роль бота выше неё.",ephemeral=True)
         try:
             await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
@@ -2219,33 +2225,33 @@ PRE_REGISTRATION_PUBLIC_CATEGORIES={
 
 async def apply_pre_registration_visibility(guild):
     """Before registration only registration and news are visible; Default League unlocks public areas."""
-    default_role=await default_league_role(guild)
-    if not default_role:
+    registered_role=find_role(guild,REGISTERED_ROLE_NAME)
+    if not registered_role:
         return 0
     changed=0
     onboarding=discord.utils.get(guild.categories,name="▶️ DOMINION START")
     if onboarding:
         changed+=await apply_overwrite_if_changed(onboarding,guild.default_role,view_channel=True,send_messages=False,connect=False,use_application_commands=False)
-        changed+=await apply_overwrite_if_changed(onboarding,default_role,view_channel=False,send_messages=False,connect=False,use_application_commands=False)
+        changed+=await apply_overwrite_if_changed(onboarding,registered_role,view_channel=False,send_messages=False,connect=False,use_application_commands=False)
         for channel in onboarding.channels:
             changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-            changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=False,send_messages=False,read_message_history=False,use_application_commands=False)
+            changed+=await apply_overwrite_if_changed(channel,registered_role,view_channel=False,send_messages=False,read_message_history=False,use_application_commands=False)
     for category in guild.categories:
         if category.name not in PRE_REGISTRATION_PUBLIC_CATEGORIES:
             continue
         changed+=await apply_overwrite_if_changed(category,guild.default_role,view_channel=False,send_messages=False,connect=False,use_application_commands=False)
-        changed+=await apply_overwrite_if_changed(category,default_role,view_channel=True,send_messages=True,connect=True,speak=True,read_message_history=True,use_application_commands=True)
+        changed+=await apply_overwrite_if_changed(category,registered_role,view_channel=True,send_messages=True,connect=True,speak=True,read_message_history=True,use_application_commands=True)
         for channel in category.channels:
             is_news=isinstance(channel,discord.TextChannel) and ("новост" in normalized_role_name(channel.name) or "news" in normalized_role_name(channel.name))
             if is_news:
                 changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+                changed+=await apply_overwrite_if_changed(channel,registered_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
             elif isinstance(channel,discord.TextChannel):
                 changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=False,send_messages=False,read_message_history=False,use_application_commands=False)
-                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+                changed+=await apply_overwrite_if_changed(channel,registered_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
             elif isinstance(channel,discord.VoiceChannel):
                 changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=False,connect=False)
-                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,connect=True,speak=True)
+                changed+=await apply_overwrite_if_changed(channel,registered_role,view_channel=True,connect=True,speak=True)
     return changed
 
 
@@ -2380,33 +2386,6 @@ async def migrate_dominion_branding(guild):
 async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
-    for guild in bot.guilds:
-        await migrate_dominion_branding(guild)
-        await ensure_dominion_league_chats(guild)
-        await ensure_staff_application_system(guild)
-        warn_roles_created=await ensure_special_warn_roles(guild)
-        if warn_roles_created:
-            print(f"{guild.name}: создано ролей варнов: {warn_roles_created}",flush=True)
-        default_stats=await give_default_league_to_registered(guild)
-        print(f"{guild.name}: Default League sync {default_stats}",flush=True)
-        await ensure_admin_panel_channel_name(guild)
-        await ensure_admin_panel_buttons(guild)
-        prereg_updates=await apply_pre_registration_visibility(guild)
-        if prereg_updates:
-            print(f"{guild.name}: обновлено прав до регистрации: {prereg_updates}",flush=True)
-        privacy_updates=await apply_league_channel_privacy(guild)
-        if privacy_updates:
-            print(f"{guild.name}: обновлено прав лиг: {privacy_updates}",flush=True)
-        readonly_updates=await apply_public_readonly_channels(guild)
-        if readonly_updates:
-            print(f"{guild.name}: обновлено каналов только для чтения: {readonly_updates}",flush=True)
-        try:
-            await ensure_ticket_inbox(guild)
-        except discord.HTTPException as exc:
-            print(f"{guild.name}: ticket inbox error: {exc!r}",flush=True)
-        ticket_updates=await ensure_ticket_close_buttons(guild)
-        if ticket_updates:
-            print(f"{guild.name}: панель тикетов обновлена в {ticket_updates} каналах",flush=True)
 
 
 @bot.event
@@ -2658,6 +2637,11 @@ async def setup(interaction:discord.Interaction):
         await interaction.followup.send("Не удалось включить режим уведомлений «Только упоминания»: боту нужно право `Управлять сервером`.",ephemeral=True)
     staff_roles=await ensure_staff_roles(g)
     registered_role=find_role(g,REGISTERED_ROLE_NAME)
+    if not registered_role:
+        try:
+            registered_role=await g.create_role(name=REGISTERED_ROLE_NAME,reason="DOMINION /setup: обязательная роль регистрации")
+        except discord.Forbidden:
+            return await interaction.followup.send("Не удалось создать роль `зарегистрирован`: боту нужно право `Управлять ролями`.",ephemeral=True)
     default_role=staff_roles.get("league_default")
     if not default_role:
         return await interaction.followup.send("Не найдена существующая роль `Default League`. Роли сервера не изменены.",ephemeral=True)
@@ -2666,6 +2650,9 @@ async def setup(interaction:discord.Interaction):
         has_saved_profile=bool(db.player(g.id,member.id).get("game_id"))
         is_registered=has_role(member,REGISTERED_ROLE_NAME) or has_saved_profile
         if not is_registered: continue
+        if registered_role not in member.roles:
+            try: await member.add_roles(registered_role,reason="DOMINION /setup: восстановление регистрации")
+            except discord.Forbidden: pass
         if default_role not in member.roles:
             try: await member.add_roles(default_role,reason="DOMINION: Default League зарегистрированному игроку")
             except discord.Forbidden: pass
@@ -2688,26 +2675,26 @@ async def setup(interaction:discord.Interaction):
         if target.overwrites_for(role).pair()!=desired.pair():
             await target.set_permissions(role,overwrite=desired)
 
-    async def gate_default_league(cat,touch_existing_channels=True):
+    async def gate_registered(cat,touch_existing_channels=True):
         await set_permissions_if_changed(cat,g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-        await set_permissions_if_changed(cat,default_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+        await set_permissions_if_changed(cat,registered_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
         if not touch_existing_channels:
             return
         for channel in cat.channels:
             if isinstance(channel,discord.TextChannel):
                 await set_permissions_if_changed(channel,g.default_role,view_channel=False,send_messages=False,use_application_commands=False)
-                await set_permissions_if_changed(channel,default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+                await set_permissions_if_changed(channel,registered_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
             elif isinstance(channel,discord.VoiceChannel):
                 await set_permissions_if_changed(channel,g.default_role,view_channel=False,connect=False)
-                await set_permissions_if_changed(channel,default_role,view_channel=True,connect=True,speak=True)
+                await set_permissions_if_changed(channel,registered_role,view_channel=True,connect=True,speak=True)
 
     onboarding=await category("▶️ DOMINION START")
     await onboarding.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-    await onboarding.set_permissions(default_role,view_channel=False)
+    await onboarding.set_permissions(registered_role,view_channel=False)
     await sync_channels(onboarding,text_names=("📋・регистрация",))
     registration_channel=await text(onboarding,"📋・регистрация")
     await registration_channel.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-    await registration_channel.set_permissions(default_role,view_channel=False)
+    await registration_channel.set_permissions(registered_role,view_channel=False)
     await registration_channel.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
     async for old_message in registration_channel.history(limit=20):
         if old_message.author==g.me:
@@ -2728,7 +2715,7 @@ async def setup(interaction:discord.Interaction):
         info_channel=await text(info,channel_name)
         is_news="новост" in normalized_role_name(channel_name) or "news" in normalized_role_name(channel_name)
         await info_channel.set_permissions(g.default_role,view_channel=is_news,send_messages=False,read_message_history=is_news,use_application_commands=False)
-        await info_channel.set_permissions(default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+        await info_channel.set_permissions(registered_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
 
     start = await category("⌨️ DOMINION COMMANDS")
     await start.set_permissions(g.default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
@@ -2812,7 +2799,7 @@ async def setup(interaction:discord.Interaction):
             await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
         league_role=staff_roles[f"league_{name.lower()}"]
         await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-        await cat.set_permissions(default_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
+        await cat.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
         await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
         await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
         await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
@@ -2828,7 +2815,7 @@ async def setup(interaction:discord.Interaction):
             if lobby.user_limit!=LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="DOMINION: синхронизация LOBBY_SIZE")
             await lobby.set_permissions(g.default_role,view_channel=False,connect=False)
-            await lobby.set_permissions(default_role,view_channel=True,connect=False)
+            await lobby.set_permissions(registered_role,view_channel=True,connect=False)
             await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
@@ -2853,13 +2840,12 @@ async def setup(interaction:discord.Interaction):
         e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
         await send_results.send(embed=e,view=ResultSubmitView())
 
-    await gate_default_league(info,touch_existing_channels=False)
+    await gate_registered(info,touch_existing_channels=False)
     for public_category in (start,community,support,private,results):
-        await gate_default_league(public_category)
-    for protected_name,(league_key,_curator_key) in protected_chats.items():
-        if league_key!="league_default":
-            await community_channels[protected_name].set_permissions(default_role,view_channel=False,send_messages=False,read_message_history=False)
-    await community_channels["🛠️・чат-кураторов"].set_permissions(default_role,view_channel=False,send_messages=False,read_message_history=False)
+        await gate_registered(public_category)
+    for protected_name in protected_chats:
+        await community_channels[protected_name].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
+    await community_channels["🛠️・чат-кураторов"].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
 
     admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True),staff_roles["owner"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),staff_roles["admin"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
     for staff_key in (
@@ -2909,8 +2895,10 @@ async def setup(interaction:discord.Interaction):
         await audit_channels["📡・общий-журнал"].send(embed=discord.Embed(title="📡 DOMINION AUDIT STREAM",description="Системные события, действия бота и служебные записи проекта.",color=discord.Color.dark_purple()))
 
     await send_staff_log(g,"общий-журнал","✅ Структура DOMINION синхронизирована",f"Запустил: {interaction.user.mention}\nРоли и закрытые разделы обновлены.",discord.Color.green())
+    await apply_pre_registration_visibility(g)
+    await apply_league_channel_privacy(g)
     await apply_public_readonly_channels(g)
-    await interaction.followup.send("Готово: обновлены только нужные элементы структуры. Существующие категории и каналы не удалялись и не пересоздавались.",ephemeral=True)
+    await interaction.followup.send("Готово: структура создана и права регистрации синхронизированы. Без `/setup` бот не создаёт каналы.",ephemeral=True)
 
 
 @bot.tree.command(name="sync_default_league",description="Выдать Default League ��сем зарегистрированным")

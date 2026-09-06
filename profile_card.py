@@ -10,7 +10,7 @@ from elo_levels import elo_bounds, elo_level
 
 ROOT=Path(__file__).resolve().parent
 W,H=1200,1500
-BG=(5,4,14); PANEL=(17,14,35); PURPLE=(132,74,255); VIOLET=(192,132,255); CYAN=(70,220,255)
+BG=(2,2,8); PANEL=(10,8,22); PURPLE=(102,52,210); VIOLET=(154,96,220); CYAN=(48,174,205)
 WHITE=(246,244,255); MUTED=(166,158,192); GREEN=(65,220,145); RED=(255,91,119)
 
 
@@ -26,7 +26,7 @@ def fetch_image(url,size):
         response=requests.get(str(url),timeout=10); response.raise_for_status()
         return ImageOps.fit(Image.open(io.BytesIO(response.content)).convert('RGB'),size,Image.Resampling.LANCZOS)
     except Exception:
-        return Image.new('RGB',size,(29,24,54))
+        return Image.new('RGB',size,(13,10,28))
 
 
 def logo(size=130):
@@ -70,11 +70,11 @@ def build_profile_card_sync(player,display_name,avatar_url,recent):
     canvas=Image.new('RGBA',(W,H),(*BG,255)); d=ImageDraw.Draw(canvas,'RGBA')
     # Dominion neon background.
     for y in range(H):
-        t=y/H; d.line((0,y,W,y),fill=(7+int(18*t),5+int(8*t),19+int(30*t),255))
+        t=y/H; d.line((0,y,W,y),fill=(2+int(7*t),2+int(4*t),8+int(14*t),255))
     glow=Image.new('RGBA',(W,H),(0,0,0,0)); gd=ImageDraw.Draw(glow)
-    gd.ellipse((-280,-220,780,700),fill=(*PURPLE,90)); gd.ellipse((620,700,1450,1600),fill=(*CYAN,35))
+    gd.ellipse((-280,-220,780,700),fill=(*PURPLE,52)); gd.ellipse((620,700,1450,1600),fill=(*CYAN,18))
     canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(130))); d=ImageDraw.Draw(canvas,'RGBA')
-    for x in range(-200,1400,210): d.polygon([(x,0),(x+90,0),(x-130,330),(x-210,330)],fill=(*VIOLET,25))
+    for x in range(-200,1400,210): d.polygon([(x,0),(x+90,0),(x-130,330),(x-210,330)],fill=(*VIOLET,11))
 
     # Brand header.
     brand=logo(112)
@@ -118,7 +118,7 @@ def build_profile_card_sync(player,display_name,avatar_url,recent):
     stats=[('MATCHES',games),('WINS',wins),('LOSSES',losses),('WIN RATE',f'{wr:.0f}%'),('K / D',f'{kd:.2f}'),('AVG KILLS',f'{avg:.1f}'),('ASSISTS',assists),('MVP',mvp)]
     for i,(label,value) in enumerate(stats):
         col=i%4; row=i//4; x=42+col*284; y=850+row*150
-        panel(d,(x,y,x+264,y+126),22,outline=(80,58,128),fill=(15,13,31))
+        panel(d,(x,y,x+264,y+126),22,outline=(54,38,92),fill=(8,7,18))
         text(d,(x+20,y+20),label,15,MUTED,True); text(d,(x+20,y+55),value,34,WHITE,True)
 
     # Form strip.

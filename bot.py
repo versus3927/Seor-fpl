@@ -55,34 +55,34 @@ MAP_VETO_TIMEOUT = 15
 REGISTERED_ROLE_NAME = "зарегистрирован"
 STARTING_ELO = 1000
 STAFF_ROLES = {
-    "owner": "owner",
+    "owner": "Owner",
     "admin": "admin",
-    "curator_qualifications": "qualifications curator",
-    "curator_division": "division curator",
-    "curator_pro": "PRO League curator",
+    "curator_qualifications": "Dm Rise curator",
+    "curator_division": "Dm Ascend curator",
+    "curator_pro": "Pro curator",
 }
 LEAGUE_ROLES = {
-    "default": "default League",
-    "qualifications": "qualifications League",
-    "division": "division League",
-    "pro": "pro League",
+    "default": "Default League",
+    "qualifications": "Dominion Rise",
+    "division": "Dominion Ascend",
+    "pro": "Pro league",
 }
 DEFAULT_LEAGUE_ALIASES=("default League","Default League","default league","Default","деф лига","дефолт лига")
 EXTRA_ROLE_SPECS = {
     "developer": ("Developer", 0x9CCBFF, {"administrator": True}),
-    "bot_role": ("DOMINION CYBER bot", 0x99AAB5, {}),
-    "director": ("GENERAL MÁNAGER", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True}),
-    "head_admin": ("head admin", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True, "moderate_members": True}),
-    "ticket_admin": ("Ticket admin", 0xA855F7, {"manage_messages": True, "moderate_members": True}),
-    "ticket_support": ("ticket support", 0x8B5CF6, {"manage_messages": True}),
+    "bot_role": ("Dominion Faceit", 0x99AAB5, {}),
+    "director": ("general manager", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True}),
+    "head_admin": ("Owner", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True, "moderate_members": True}),
+    "ticket_admin": ("games Support", 0xA855F7, {"manage_messages": True, "moderate_members": True}),
+    "ticket_support": ("games Support", 0x8B5CF6, {"manage_messages": True}),
     "head_ac": ("head ac", 0x1D4ED8, {"manage_messages": True, "moderate_members": True}),
     "games_admin": ("games admin", 0xEC4899, {"manage_messages": True, "move_members": True}),
     "anticheat": ("anticheat", 0x22C55E, {"manage_messages": True}),
     "moderator": ("moderator", 0xF97316, {"manage_messages": True, "moderate_members": True}),
-    "content_creator": ("content creator", 0x14D8CC, {}),
-    "streamer": ("streamer", 0xFDE68A, {}),
-    "sponsor": ("₽", 0x00FF55, {}),
-    "pro_lead": ("head of pro League", 0xC026D3, {"manage_messages": True, "move_members": True}),
+    "content_creator": ("Partner DPL", 0x14D8CC, {}),
+    "streamer": ("Partner DPL", 0xFDE68A, {}),
+    "sponsor": ("Server Booster", 0x00FF55, {}),
+    "pro_lead": ("Pro curator", 0xC026D3, {"manage_messages": True, "move_members": True}),
     "premium": ("Premium", 0x0EA5E9, {}),
     "all_warn_1": ("ALL warn 1/3", 0xF87171, {}),
     "all_warn_2": ("ALL warn 2/3", 0xEF4444, {}),
@@ -291,76 +291,20 @@ async def result_admin_access(interaction):
 
 
 async def ensure_staff_roles(guild):
+    """Resolve roles that already exist on this server without creating, renaming or editing any role."""
     result={}
-    legacy_role_renames={
-        "👑 Owner":"owner","🛡️ Admin":"admin","⚪ Curator Default":None,
-        "🟢 Curator Prospect":"qualifications curator","🟣 Curator Division":"division curator","🔴 Curator Pro":"PRO League curator",
-        "🟢 Prospect":"qualifications League","🟣 Division":"division League","🔴 Pro":"pro League",
-        "🧬 DOMINION Developer":"Developer","🏛️ Project Director":"GENERAL MÁNAGER","🔰 Lead Administrator":"head admin",
-        "🎫 Support Administrator":"Ticket admin","⚔️ Anti-Cheat Lead":"head ac","🎮 Match Administrator":"games admin",
-        "🧿 Anti-Cheat":"anticheat","🔨 Moderator":"moderator","🎨 Media Creator":"content creator",
-        "📡 Stream Partner":"streamer","💠 DOMINION Sponsor":"₽","👑 Pro League Lead":"head of pro League","💎 Premium":"Premium",
-        "🔴 Pro Warning I":"1/3 pro warn","🔴 Pro Warning II":"2/3 pro warn","🔴 Pro Warning III":"3/3 pro warn",
-        "🟣 Division Warning I":"1/3 division warn","🟣 Division Warning II":"2/3 division warn","🟣 Division Warning III":"3/3 division warn",
-        "🟡 Qualification Warning I":"1/3 Qual warn","🟡 Qualification Warning II":"2/3 Qual warn","🟡 Qualification Warning III":"3/3 Qual warn",
-        "🧪 Division Trial":"test division","🧪 Qualification Trial":"test fpl qualifications",
-    }
-    for old_name,new_name in legacy_role_renames.items():
-        old_role=discord.utils.get(guild.roles,name=old_name)
-        if not old_role: continue
-        existing=find_role(guild,new_name) if new_name else None
-        try:
-            if new_name and not existing: await old_role.edit(name=new_name,reason="DOMINION: точные названия ролей")
-            else: await old_role.delete(reason="DOMINION: удаление старой версии роли")
-        except discord.Forbidden: pass
-    specs={
-        "owner": (discord.Color.gold(), discord.Permissions(administrator=True)),
-        "admin": (discord.Color.red(), discord.Permissions(manage_guild=True,manage_channels=True,manage_messages=True,moderate_members=True,move_members=True,mute_members=True)),
-        "curator_qualifications": (discord.Color.green(), discord.Permissions(move_members=True,mute_members=True)),
-        "curator_division": (discord.Color.purple(), discord.Permissions(move_members=True,mute_members=True)),
-        "curator_pro": (discord.Color.magenta(), discord.Permissions(move_members=True,mute_members=True)),
-    }
     for key,name in STAFF_ROLES.items():
-        role=find_role(guild,name)
-        role_color,permissions=specs[key]
-        if not role:
-            try:
-                role=await guild.create_role(name=name,color=role_color,permissions=permissions,hoist=True,reason="DOMINION: создание служебной роли")
-            except discord.Forbidden:
-                role=await guild.create_role(name=name,color=role_color,permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: создание роли без глобальных прав")
-        else:
-            try:
-                if key=="curator_qualifications":
-                    await role.edit(permissions=permissions,hoist=True,reason="DOMINION: синхронизация роли без изменения пользовательского цвета")
-                else:
-                    await role.edit(color=role_color,permissions=permissions,hoist=True,reason="DOMINION: синхронизация служебной роли")
-            except discord.Forbidden: pass
-        result[key]=role
-    league_colors={"default":discord.Color.light_grey(),"qualifications":discord.Color.gold(),"division":discord.Color.purple(),"pro":discord.Color.red()}
+        result[key]=find_role(guild,name)
     for key,name in LEAGUE_ROLES.items():
         if key=="default":
             role=next((role for role in guild.roles if any(role_name_matches(role.name,alias) for alias in DEFAULT_LEAGUE_ALIASES)),None)
         else:
             role=find_role(guild,name)
-        if not role:
-            role=await guild.create_role(name=name,color=league_colors[key],permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: роль доступа к лиге")
         result[f"league_{key}"]=role
-    for key,(name,color_value,permission_values) in EXTRA_ROLE_SPECS.items():
-        role=find_role(guild,name)
-        permissions=discord.Permissions(**permission_values)
-        if not role:
-            try:
-                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=permissions,hoist=True,reason="DOMINION: расширенная роль персонала")
-            except discord.Forbidden:
-                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: роль без глобальных прав")
-        else:
-            try: await role.edit(color=discord.Color(color_value),permissions=permissions,hoist=True,reason="DOMINION: синхронизация роли")
-            except discord.Forbidden: pass
-        result[key]=role
-    owner=guild.get_member(guild.owner_id)
-    if owner and result["owner"] not in owner.roles:
-        try: await owner.add_roles(result["owner"],reason="DOMINION: роль владельца сервера")
-        except discord.Forbidden: pass
+    for key,(name,_color_value,_permission_values) in EXTRA_ROLE_SPECS.items():
+        result[key]=find_role(guild,name)
+    if not result.get("bot_role") and guild.me:
+        result["bot_role"]=guild.me.top_role
     return result
 
 
@@ -488,7 +432,7 @@ def registration_embed(member=None):
     first_step="Открой канал **📋・регистрация** и выбери нужную кнопку." if member else "Выбери **Регистрация** для нового профиля или **Войти по данным** для восстановления старого."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
     e.add_field(name="02  УКАЖИ ДАННЫЕ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
-    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роли **{REGISTERED_ROLE_NAME}** и **default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
+    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст существующую роль **Default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
     e.set_footer(text="DOMINION CYBER • competitive platform")
     return e
 
@@ -511,15 +455,15 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
         try: await interaction.user.edit(nick=nickname,reason="DOMINION: игровой ник при регистрации")
         except discord.Forbidden: pass
         roles=await ensure_staff_roles(interaction.guild)
-        role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
-        if not role:
-            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
+        registered_role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
+        default_role=roles.get("league_default")
+        if registered_role and registered_role not in interaction.user.roles:
+            try: await interaction.user.add_roles(registered_role,reason="DOMINION: регистрация игрового профиля")
+            except discord.Forbidden: pass
+        if not default_role:
+            return await interaction.followup.send("Профиль сохранён, но существующая роль `Default League` не найдена на сервере.",ephemeral=True)
         try:
-            await interaction.user.add_roles(role,reason="DOMINION: регистрация игрового профиля")
-        except discord.Forbidden:
-            return await interaction.followup.send("��рофиль сохранён, но роль `зарегистрирован` не выдана. Подними роль бота выше неё.",ephemeral=True)
-        try:
-            await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после регистрации")
+            await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после регистрации")
         except discord.Forbidden:
             return await interaction.followup.send("Регистрация завершена, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
@@ -542,15 +486,15 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
         try: await interaction.user.edit(nick=profile["nickname"],reason="DOMINION: восстановление игрового профиля")
         except discord.Forbidden: pass
         roles=await ensure_staff_roles(interaction.guild)
-        role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
-        if not role:
-            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
+        registered_role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
+        default_role=roles.get("league_default")
+        if registered_role and registered_role not in interaction.user.roles:
+            try: await interaction.user.add_roles(registered_role,reason="DOMINION: восстановление регистрации")
+            except discord.Forbidden: pass
+        if not default_role:
+            return await interaction.followup.send("Профиль восстановлен, но существующая роль `Default League` не найдена на сервере.",ephemeral=True)
         try:
-            await interaction.user.add_roles(role,reason="DOMINION: восстановление регистрации")
-        except discord.Forbidden:
-            return await interaction.followup.send("Профиль восстановлен, но роль `зарегистрирован` не выдана. Подними роль бота выше неё.",ephemeral=True)
-        try:
-            await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после входа")
+            await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
             return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
@@ -2125,36 +2069,8 @@ async def setup_hook():
 
 
 async def ensure_special_warn_roles(guild):
-    created=0
-    migrations={
-        "ALL warn":"all_warn_1",
-        "anticheat warn":"anticheat_warn_1",
-        "admin warn":"admin_warn_1",
-    }
-    for old_name,first_key in migrations.items():
-        old_role=find_role(guild,old_name)
-        first_name=EXTRA_ROLE_SPECS[first_key][0]
-        first_role=find_role(guild,first_name)
-        if old_role and not first_role:
-            try:
-                await old_role.edit(name=first_name,reason="DOMINION FACEIT: перенос варна в систему 1/3")
-            except discord.Forbidden:
-                pass
-    tier_keys=(
-        "all_warn_1","all_warn_2","all_warn_3",
-        "anticheat_warn_1","anticheat_warn_2","anticheat_warn_3",
-        "admin_warn_1","admin_warn_2","admin_warn_3",
-    )
-    for key in tier_keys:
-        name,color_value,permission_values=EXTRA_ROLE_SPECS[key]
-        if find_role(guild,name):
-            continue
-        try:
-            await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions(**permission_values),hoist=True,reason="DOMINION FACEIT: роль варна 1/3")
-            created+=1
-        except discord.Forbidden:
-            pass
-    return created
+    # The destination server owns its role list. Missing warn roles are never auto-created or renamed.
+    return 0
 
 
 async def default_league_role(guild):
@@ -2162,7 +2078,10 @@ async def default_league_role(guild):
 
 
 async def give_default_league_to_member(member,reason="DOMINION: Default League для зарегистрированного игрока"):
-    if member.bot or not has_role(member,REGISTERED_ROLE_NAME):
+    if member.bot:
+        return False
+    saved_profile=bool(db.player(member.guild.id,member.id).get("game_id"))
+    if not has_role(member,REGISTERED_ROLE_NAME) and not saved_profile:
         return False
     role=await default_league_role(member.guild)
     if not role or role in member.roles:
@@ -2184,16 +2103,15 @@ async def give_default_league_to_registered(guild):
         await asyncio.wait_for(guild.chunk(cache=True),timeout=30)
     except (asyncio.TimeoutError,discord.HTTPException):
         pass
-    registered_role=find_role(guild,REGISTERED_ROLE_NAME)
     default_role=await default_league_role(guild)
     stats={"members":len(guild.members),"registered":0,"already":0,"assigned":0,"failed":0,"hierarchy":False}
-    if not registered_role or not default_role:
+    if not default_role:
         return stats
     if default_role >= guild.me.top_role:
         stats["hierarchy"]=True
         return stats
     for member in guild.members:
-        if member.bot or not has_role(member,REGISTERED_ROLE_NAME):
+        if member.bot or not bool(db.player(guild.id,member.id).get("game_id")):
             continue
         stats["registered"]+=1
         if default_role in member.roles:
@@ -2291,6 +2209,44 @@ async def merge_channel_permissions(target,role,**values):
         await target.set_permissions(role,overwrite=overwrite,reason="DOMINION FACEIT: канал только для чтения")
         return True
     return False
+
+
+PRE_REGISTRATION_PUBLIC_CATEGORIES={
+    "📡 DOMINION INFO", "⌨️ DOMINION COMMANDS", "💬 DOMINION COMMUNITY",
+    "🆘 DOMINION SUPPORT", "🎧 DOMINION PRIVATE", "📮 DOMINION RESULTS",
+}
+
+
+async def apply_pre_registration_visibility(guild):
+    """Before registration only registration and news are visible; Default League unlocks public areas."""
+    default_role=await default_league_role(guild)
+    if not default_role:
+        return 0
+    changed=0
+    onboarding=discord.utils.get(guild.categories,name="▶️ DOMINION START")
+    if onboarding:
+        changed+=await apply_overwrite_if_changed(onboarding,guild.default_role,view_channel=True,send_messages=False,connect=False,use_application_commands=False)
+        changed+=await apply_overwrite_if_changed(onboarding,default_role,view_channel=False,send_messages=False,connect=False,use_application_commands=False)
+        for channel in onboarding.channels:
+            changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+            changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=False,send_messages=False,read_message_history=False,use_application_commands=False)
+    for category in guild.categories:
+        if category.name not in PRE_REGISTRATION_PUBLIC_CATEGORIES:
+            continue
+        changed+=await apply_overwrite_if_changed(category,guild.default_role,view_channel=False,send_messages=False,connect=False,use_application_commands=False)
+        changed+=await apply_overwrite_if_changed(category,default_role,view_channel=True,send_messages=True,connect=True,speak=True,read_message_history=True,use_application_commands=True)
+        for channel in category.channels:
+            is_news=isinstance(channel,discord.TextChannel) and ("новост" in normalized_role_name(channel.name) or "news" in normalized_role_name(channel.name))
+            if is_news:
+                changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
+            elif isinstance(channel,discord.TextChannel):
+                changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=False,send_messages=False,read_message_history=False,use_application_commands=False)
+                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+            elif isinstance(channel,discord.VoiceChannel):
+                changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=False,connect=False)
+                changed+=await apply_overwrite_if_changed(channel,default_role,view_channel=True,connect=True,speak=True)
+    return changed
 
 
 async def apply_public_readonly_channels(guild):
@@ -2435,6 +2391,9 @@ async def on_ready():
         print(f"{guild.name}: Default League sync {default_stats}",flush=True)
         await ensure_admin_panel_channel_name(guild)
         await ensure_admin_panel_buttons(guild)
+        prereg_updates=await apply_pre_registration_visibility(guild)
+        if prereg_updates:
+            print(f"{guild.name}: обновлено прав до регистрации: {prereg_updates}",flush=True)
         privacy_updates=await apply_league_channel_privacy(guild)
         if privacy_updates:
             print(f"{guild.name}: обновлено прав лиг: {privacy_updates}",flush=True)
@@ -2525,7 +2484,7 @@ async def on_interaction(interaction):
         return await handle_staff_application_review(interaction,cid)
     if cid in {"seor:registration:start","seor:registration:login"}:
         try:
-            if has_role(interaction.user,REGISTERED_ROLE_NAME):
+            if has_role(interaction.user,REGISTERED_ROLE_NAME) or bool(db.player(interaction.guild_id,interaction.user.id).get("game_id")):
                 message="Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд." if cid.endswith(":start") else "Ты уже вошёл в профиль DOMINION."
                 return await interaction.response.send_message(message,ephemeral=True)
             modal=GameIdModal() if cid.endswith(":start") else LoginByDataModal()
@@ -2699,17 +2658,14 @@ async def setup(interaction:discord.Interaction):
         await interaction.followup.send("Не удалось включить режим уведомлений «Только упоминания»: боту нужно право `Управлять сервером`.",ephemeral=True)
     staff_roles=await ensure_staff_roles(g)
     registered_role=find_role(g,REGISTERED_ROLE_NAME)
-    if not registered_role:
-        registered_role=await g.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
-    default_role=staff_roles["league_default"]
+    default_role=staff_roles.get("league_default")
+    if not default_role:
+        return await interaction.followup.send("Не найдена существующая роль `Default League`. Роли сервера не изменены.",ephemeral=True)
     for member in g.members:
         if member.bot: continue
         has_saved_profile=bool(db.player(g.id,member.id).get("game_id"))
         is_registered=has_role(member,REGISTERED_ROLE_NAME) or has_saved_profile
         if not is_registered: continue
-        if not has_role(member,REGISTERED_ROLE_NAME):
-            try: await member.add_roles(registered_role,reason="DOMINION: перенос регистрации")
-            except discord.Forbidden: continue
         if default_role not in member.roles:
             try: await member.add_roles(default_role,reason="DOMINION: Default League зарегистрированному игроку")
             except discord.Forbidden: pass
@@ -2732,26 +2688,26 @@ async def setup(interaction:discord.Interaction):
         if target.overwrites_for(role).pair()!=desired.pair():
             await target.set_permissions(role,overwrite=desired)
 
-    async def gate_registered(cat,touch_existing_channels=True):
+    async def gate_default_league(cat,touch_existing_channels=True):
         await set_permissions_if_changed(cat,g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-        await set_permissions_if_changed(cat,registered_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+        await set_permissions_if_changed(cat,default_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
         if not touch_existing_channels:
             return
         for channel in cat.channels:
             if isinstance(channel,discord.TextChannel):
                 await set_permissions_if_changed(channel,g.default_role,view_channel=False,send_messages=False,use_application_commands=False)
-                await set_permissions_if_changed(channel,registered_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+                await set_permissions_if_changed(channel,default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
             elif isinstance(channel,discord.VoiceChannel):
                 await set_permissions_if_changed(channel,g.default_role,view_channel=False,connect=False)
-                await set_permissions_if_changed(channel,registered_role,view_channel=True,connect=True,speak=True)
+                await set_permissions_if_changed(channel,default_role,view_channel=True,connect=True,speak=True)
 
     onboarding=await category("▶️ DOMINION START")
     await onboarding.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-    await onboarding.set_permissions(registered_role,view_channel=False)
+    await onboarding.set_permissions(default_role,view_channel=False)
     await sync_channels(onboarding,text_names=("📋・регистрация",))
     registration_channel=await text(onboarding,"📋・регистрация")
     await registration_channel.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
-    await registration_channel.set_permissions(registered_role,view_channel=False)
+    await registration_channel.set_permissions(default_role,view_channel=False)
     await registration_channel.set_permissions(g.me,view_channel=True,send_messages=True,manage_messages=True)
     async for old_message in registration_channel.history(limit=20):
         if old_message.author==g.me:
@@ -2769,7 +2725,10 @@ async def setup(interaction:discord.Interaction):
     info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
     await sync_channels(info, text_names=info_names)
     for channel_name in info_names:
-        await text(info, channel_name)
+        info_channel=await text(info,channel_name)
+        is_news="новост" in normalized_role_name(channel_name) or "news" in normalized_role_name(channel_name)
+        await info_channel.set_permissions(g.default_role,view_channel=is_news,send_messages=False,read_message_history=is_news,use_application_commands=False)
+        await info_channel.set_permissions(default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
 
     start = await category("⌨️ DOMINION COMMANDS")
     await start.set_permissions(g.default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
@@ -2780,7 +2739,7 @@ async def setup(interaction:discord.Interaction):
     owner_member=g.get_member(g.owner_id)
     if owner_member:
         await commands_channel.set_permissions(owner_member,view_channel=True,send_messages=True)
-    for role in staff_roles.values():
+    for role in {role for role in staff_roles.values() if role}:
         await commands_channel.set_permissions(role,view_channel=True,send_messages=True,read_message_history=True)
     async for old_message in commands_channel.history(limit=20):
         if old_message.author == g.me:
@@ -2820,7 +2779,6 @@ async def setup(interaction:discord.Interaction):
     for channel_name,(league_key,curator_key) in protected_chats.items():
         channel=community_channels[channel_name]
         await channel.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
-        await channel.set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
         await channel.set_permissions(staff_roles[league_key],view_channel=True,send_messages=True,read_message_history=True)
         if curator_key and staff_roles.get(curator_key):
             await channel.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
@@ -2854,7 +2812,7 @@ async def setup(interaction:discord.Interaction):
             await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
         league_role=staff_roles[f"league_{name.lower()}"]
         await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-        await cat.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
+        await cat.set_permissions(default_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
         await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
         await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
         await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
@@ -2870,7 +2828,7 @@ async def setup(interaction:discord.Interaction):
             if lobby.user_limit!=LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="DOMINION: синхронизация LOBBY_SIZE")
             await lobby.set_permissions(g.default_role,view_channel=False,connect=False)
-            await lobby.set_permissions(registered_role,view_channel=True,connect=False)
+            await lobby.set_permissions(default_role,view_channel=True,connect=False)
             await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
@@ -2895,17 +2853,13 @@ async def setup(interaction:discord.Interaction):
         e=discord.Embed(title="📌 ОТПРАВКА РЕЗУЛЬТАТА МАТЧА",description="Нажми кнопку, введи ID матча и счёт, затем отправь скриншот итогового экрана игры. Результат попадёт на ручную проверку администрации.",color=color())
         await send_results.send(embed=e,view=ResultSubmitView())
 
-    await gate_registered(info,touch_existing_channels=False)
+    await gate_default_league(info,touch_existing_channels=False)
     for public_category in (start,community,support,private,results):
-        await gate_registered(public_category)
-    for protected_name in protected_chats:
-        await community_channels[protected_name].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
-    await community_channels["🛠️・чат-кураторов"].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
-    for league_name,(league_emoji,_) in LEAGUES.items():
-        for league_category in [c for c in g.categories if c.name==league_category_name(league_name)]:
-            await league_category.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
-            for league_channel in league_category.channels:
-                await league_channel.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
+        await gate_default_league(public_category)
+    for protected_name,(league_key,_curator_key) in protected_chats.items():
+        if league_key!="league_default":
+            await community_channels[protected_name].set_permissions(default_role,view_channel=False,send_messages=False,read_message_history=False)
+    await community_channels["🛠️・чат-кураторов"].set_permissions(default_role,view_channel=False,send_messages=False,read_message_history=False)
 
     admin_overwrites={g.default_role:discord.PermissionOverwrite(view_channel=False),g.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True),staff_roles["owner"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True),staff_roles["admin"]:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
     for staff_key in (
@@ -2967,16 +2921,13 @@ async def sync_default_league(interaction:discord.Interaction):
         return await interaction.response.send_message("Команда доступна только администрации.",ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
     stats=await give_default_league_to_registered(interaction.guild)
-    registered_role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
     default_role=await default_league_role(interaction.guild)
-    if not registered_role:
-        return await interaction.followup.send("Не найдена роль `зарегистрирован`.",ephemeral=True)
     if not default_role:
         return await interaction.followup.send("Не найдена роль `Default League`.",ephemeral=True)
     if stats["hierarchy"]:
         return await interaction.followup.send("Discord запрещает выдачу: подними роль бота **выше `Default League`** в настройках ролей сервера, затем повтори команду.",ephemeral=True)
     await interaction.followup.send(
-        f"Синхронизация завершена. Загружено участников: **{stats['members']}** · с ролью регистрации: **{stats['registered']}** · уже имели Default League: **{stats['already']}** · выдано: **{stats['assigned']}** · ошибок: **{stats['failed']}**.",
+        f"Синхронизация завершена. Загружено участников: **{stats['members']}** · с профилем в базе: **{stats['registered']}** · уже имели Default League: **{stats['already']}** · выдано: **{stats['assigned']}** · ошибок: **{stats['failed']}**.",
         ephemeral=True,
     )
 

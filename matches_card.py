@@ -14,7 +14,7 @@ LEAGUE_COLORS={
 
 
 def font(size,bold=False):
- path=ROOT/'assets'/'fonts'/('DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf')
+ path=ROOT/'assets'/'fonts'/('Arial-Bold.ttf' if bold else 'Arial.ttf')
  return ImageFont.truetype(str(path),size)
 
 

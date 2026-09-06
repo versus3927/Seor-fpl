@@ -3,9 +3,10 @@ from pathlib import Path
 import requests
 from PIL import Image,ImageDraw,ImageFilter,ImageFont,ImageOps
 from elo_levels import elo_level
+ROOT=Path(__file__).resolve().parent
 W,H=1536,864; PURPLE=(171,58,255); PINK=(238,59,178); WHITE=(247,244,252); MUTED=(172,151,190); BG=(3,2,10); PANEL=(16,7,34); CARD=(30,12,53)
 def font(n,b=False):
- p=Path('/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf');return ImageFont.truetype(str(p),n) if p.exists() else ImageFont.load_default()
+ p=ROOT/'assets'/'fonts'/('Arial-Bold.ttf' if b else 'Arial.ttf'); return ImageFont.truetype(str(p),n)
 def txt(d,xy,s,n,c=WHITE,b=False,a=None):d.text(xy,str(s),font=font(n,b),fill=(*c,255),anchor=a)
 def box(d,b,r=20,fill=PANEL,outline=(80,27,122),w=2):d.rounded_rectangle(b,r,fill=(*fill,245),outline=(*outline,220),width=w)
 def av(url,n):

@@ -7,7 +7,7 @@ W=H=1400; ROOT=Path(__file__).resolve().parent
 BG=(3,2,9); PANEL=(16,9,29); CELL=(24,14,40); PURPLE=(171,60,255); PINK=(239,57,175); WHITE=(249,247,252); MUTED=(173,155,190)
 LEAGUE_NAMES={'Default':'DEFAULT','Qualifications':'RISE','Division':'ASCEND','Pro':'PRO'}
 def font(n,b=False):
- p=Path('/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf'); return ImageFont.truetype(str(p),n) if p.exists() else ImageFont.load_default()
+ p=ROOT/'assets'/'fonts'/('Arial-Bold.ttf' if b else 'Arial.ttf'); return ImageFont.truetype(str(p),n)
 def av(url,n):
  try:r=requests.get(str(url),timeout=7);r.raise_for_status();return ImageOps.fit(Image.open(io.BytesIO(r.content)).convert('RGB'),(n,n),Image.Resampling.LANCZOS)
  except Exception:return Image.new('RGB',(n,n),(54,34,72))
@@ -18,7 +18,7 @@ def build_leaderboard(rows,league):
  im=Image.new('RGBA',(W,H),(*BG,255));d=ImageDraw.Draw(im,'RGBA');gl=Image.new('RGBA',(W,H));g=ImageDraw.Draw(gl);g.ellipse((750,-300,1650,750),fill=(*PURPLE,70));g.ellipse((-400,800,650,1700),fill=(*PINK,30));im.alpha_composite(gl.filter(ImageFilter.GaussianBlur(170)));d=ImageDraw.Draw(im,'RGBA')
  txt(d,(48,58),'ЛУЧШИЕ',55,PURPLE,True);txt(d,(365,58),'ИГРОКИ',55,WHITE,True);txt(d,(1348,70),'Dominion Faceit',23,WHITE,True,'ra')
  d.rounded_rectangle((48,150,335,215),18,fill=(*CELL,245));txt(d,(75,183),'LEAGUE:',17,PURPLE,True);txt(d,(315,183),LEAGUE_NAMES.get(league,league).upper(),17,WHITE,True,'ra')
- headers=[('#',65),('PLAYER',160),('WIN',575),('LOSE',700),('WINRATE',825),('POINTS',965),('K/D',1090),('AVG',1200),('⬡',1320)]
+ headers=[('#',65),('PLAYER',160),('WIN',575),('LOSE',700),('WINRATE',825),('POINTS',965),('K/D',1090),('AVG',1200),('',1320)]
  for label,x in headers:txt(d,(x,270),label,15,PURPLE if label not in ('LOSE','WINRATE') else PINK if label=='LOSE' else WHITE,True,'mm')
  for i in range(10):
   y=305+i*94; item=rows[i] if i<len(rows) else None

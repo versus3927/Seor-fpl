@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+from pathlib import Path
 from collections import defaultdict
 from difflib import SequenceMatcher
 
@@ -18,10 +19,12 @@ import db
 from profile_card import build_profile_card
 from leaderboard_card import build_leaderboard
 from matches_card import build_matches_card
+from match_card import build_match_card
 from screenshot_reader import analyze_screenshot
 from elo_levels import elo_level, elo_table_text
 
 load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 BOT_NAME = os.getenv("BOT_NAME", "Dominion FACEIT")
@@ -729,7 +732,7 @@ class GameLookupModal(discord.ui.Modal, title="Поиск профиля"):
             ids=set((match["team_a"]+","+match["team_b"]).split(","))
             if str(p["user_id"]) in ids: recent.append(match)
         avatar_url=str(member.display_avatar.with_size(256).url) if member else ""
-        card=await build_profile_card(p,name,avatar_url,recent)
+        card=await build_profile_card(p,name,avatar_url,recent,build_profile_meta(interaction.guild,p,member))
         await interaction.followup.send(file=discord.File(card,"profile.png"),ephemeral=True)
 
 
@@ -1538,12 +1541,23 @@ async def ensure_staff_application_system(guild):
     if not panel: panel=await guild.create_text_channel("📨・заявки-на-стафф",category=support)
     found=False
     async for message in panel.history(limit=30):
-        if message.author==guild.me and message.embeds and message.embeds[0].title=="👑 DOMINION STAFF APPLICATIONS": found=True; break
+        if message.author==guild.me and message.embeds and message.embeds[0].title=="👑 DOMINION STAFF APPLICATIONS":
+            if message.attachments:
+                found=True
+            else:
+                try: await message.delete()
+                except discord.HTTPException: pass
+            break
     if not found:
         embed=discord.Embed(title="👑 DOMINION STAFF APPLICATIONS",description="Выбери направление и заполни анкету. Заявку увидит только ответственная группа администрации.",color=discord.Color.purple())
         embed.add_field(name="Moderator",value="Заявку рассматривают Admin и старшее руководство.",inline=False)
         embed.add_field(name="Ticket Support",value="Заявку рассматривают Ticket Admin и старшее руководство.",inline=False)
-        await panel.send(embed=embed,view=StaffApplicationPanelView())
+        application_banner=BASE_DIR/"assets"/"applications-banner.png"
+        if application_banner.exists():
+            embed.set_image(url="attachment://applications-banner.png")
+            await panel.send(embed=embed,view=StaffApplicationPanelView(),file=discord.File(application_banner,filename="applications-banner.png"))
+        else:
+            await panel.send(embed=embed,view=StaffApplicationPanelView())
 
 
 class TicketTypeSelect(discord.ui.Select):
@@ -1861,6 +1875,18 @@ def league_top_embed():
     return e
 
 
+def build_profile_meta(guild,player_data,member=None):
+    current_league=player_league(int(player_data.get("points",0)))
+    league_rows=[row for row in db.leaders(guild.id,1000) if player_league(int(row.get("points",0)))==current_league]
+    position=next((i for i,row in enumerate(league_rows,1) if int(row["user_id"])==int(player_data["user_id"])),None)
+    top=[]
+    for row in league_rows[:3]:
+        top_member=guild.get_member(int(row["user_id"]))
+        top.append({"name":row.get("nickname") or (top_member.display_name if top_member else f"Player {row['user_id']}"),"avatar_url":str(top_member.display_avatar.with_size(128).url) if top_member else ""})
+    joined_date=member.joined_at.strftime("%d.%m.%Y") if member and member.joined_at else "—"
+    return {"position":position or "—","joined_date":joined_date,"league_top":top}
+
+
 async def send_profile(interaction,member=None):
     await interaction.response.defer(ephemeral=True, thinking=True)
     member=member or interaction.user
@@ -1870,7 +1896,7 @@ async def send_profile(interaction,member=None):
         ids=set((m["team_a"]+","+m["team_b"]).split(","))
         if str(member.id) in ids: recent.append(m)
     avatar_url=member.display_avatar.with_size(256).url
-    card=await build_profile_card(p,p.get("nickname") or member.display_name,str(avatar_url),recent)
+    card=await build_profile_card(p,p.get("nickname") or member.display_name,str(avatar_url),recent,build_profile_meta(interaction.guild,p,member))
     view=None
     if member.id==interaction.user.id:
         view=discord.ui.View(timeout=60)
@@ -2036,7 +2062,13 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
     e.add_field(name="💣 T",value="\n".join(f"• {m.mention}" for m in b))
     view=discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="Получить ID",emoji="🆔",style=discord.ButtonStyle.success,custom_id=f"match:getid:{match_id}"))
-    await text.send(content=" ".join(m.mention for m in members),embed=e,view=view)
+    def match_card_item(member):
+        data=db.player(lobby.guild.id,member.id)
+        return {**data,"name":data.get("nickname") or member.display_name,"avatar_url":str(member.display_avatar.with_size(128).url)}
+    host_data=db.player(lobby.guild.id,host.id)
+    match_image=await asyncio.to_thread(build_match_card,match_id,league,map_name,host_data.get("nickname") or host.display_name,host_data.get("game_id"),[match_card_item(m) for m in a],[match_card_item(m) for m in b])
+    e.set_image(url="attachment://dominion-match.png")
+    await text.send(content=" ".join(m.mention for m in members),embed=e,view=view,file=discord.File(match_image,filename="dominion-match.png"))
     await update_queue(lobby)
 
 
@@ -2641,7 +2673,13 @@ async def setup(interaction:discord.Interaction):
         if old_message.author==g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    await registration_channel.send(embed=registration_embed(),view=RegistrationView())
+    registration_panel=registration_embed()
+    registration_banner=BASE_DIR/"assets"/"registration-banner.png"
+    if registration_banner.exists():
+        registration_panel.set_image(url="attachment://registration-banner.png")
+        await registration_channel.send(embed=registration_panel,view=RegistrationView(),file=discord.File(registration_banner,filename="registration-banner.png"))
+    else:
+        await registration_channel.send(embed=registration_panel,view=RegistrationView())
 
     info = await category("📡 DOMINION INFO")
     info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")

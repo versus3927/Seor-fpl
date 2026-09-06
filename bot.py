@@ -387,7 +387,7 @@ def queue_embed(channel):
         description=f"{emoji} **Очередь открыта.** Зайдите в голосовой канал, чтобы участвовать.\n\n**Подтверждённые игроки:** `{len(members)}/{LOBBY_SIZE}`\n**Голосовой канал:** {channel.mention}\n\n**В очереди**\n{lines}\n\n**До старта:** `{max(0, LOBBY_SIZE-len(members))}`",
         color=color(),
     )
-    e.set_footer(text="Матч до 13 победных раундов · очередь обно��ляется автоматически")
+    e.set_footer(text="Матч до 13 победных раундов · очередь обновляется автоматически")
     return e
 
 
@@ -490,7 +490,7 @@ def registration_embed(member=None):
 
 
 class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
-    nickname = discord.ui.TextInput(label="Игров��й ник", placeholder="Например: Versus", min_length=2, max_length=24)
+    nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Например: Versus", min_length=2, max_length=24)
     game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="Например: 245507174", max_length=30)
     async def on_submit(self, interaction):
         value=str(self.game_id).strip()
@@ -548,7 +548,7 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
         try:
             await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
-            return await interaction.followup.send("Профил�� восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
+            return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
         await interaction.followup.send(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
 
@@ -714,7 +714,7 @@ async def process_result_submission(interaction,match_id,attachment):
     await interaction.followup.send(f"✅ Скриншот распознан. Результат №{submission_id} отправлен модераторам.",ephemeral=True)
 
 
-class GameLookupModal(discord.ui.Modal, title="Поиск профил��"):
+class GameLookupModal(discord.ui.Modal, title="Поиск профиля"):
     game_id = discord.ui.TextInput(label="Игровой ID", placeholder="Например: 132699411", max_length=30)
 
     async def on_submit(self, interaction):
@@ -753,8 +753,8 @@ DASHBOARD_SECTIONS={
     "rating":("🏆","Рейтинг","Таблица лидеров, твой ELO и место на сервере."),
     "matches":("🎮","Матчи","Последние игры, текущий статус и поиск по ID."),
     "party":("👥","Пати","Группа до трёх игроков для совместного подбора."),
-    "account":("⚙️","Акка��нт","Игровой ID и данные регистрации."),
-    "roles":("���️","Роли","Создание и выдача служебных ролей проекта."),
+    "account":("⚙️","Аккаунт","Игровой ID и данные регистрации."),
+    "roles":("🛡️","Роли","Создание и выдача служебных ролей проекта."),
 }
 
 
@@ -778,7 +778,7 @@ def dashboard_panel_embed(section):
 def dashboard_home_embed():
     e=discord.Embed(title="🎛️ ПАНЕЛЬ УПРАВЛЕНИЯ",description="Твой центр управления матчами и профилем. Нажми кнопку ниже — панель откроется лично для тебя.",color=discord.Color.from_rgb(124,58,237))
     e.add_field(name="👤 Игрок",value="Профиль • статистика • рейтинг",inline=True)
-    e.add_field(name="🎮 Матчи",value="История • поиск • результаты",inline=True)
+    e.add_field(name="🎮 Матчи",value="История и поиск • результаты",inline=True)
     e.add_field(name="👥 Команда",value="Пати • совместный подбор",inline=True)
     e.add_field(name="🛡️ Персонал",value="Создание и выдача служебных ролей",inline=False)
     e.set_footer(text="DOMINION CYBER · FACEIT STANDOFF 2")
@@ -1696,7 +1696,7 @@ async def ensure_ticket_inbox(guild):
 
 async def notify_ticket_inbox(guild,ticket_channel,title,author):
     inbox=await ensure_ticket_inbox(guild)
-    embed=discord.Embed(title="📥 Новый тикет",description=f"Раздел: **{title}**\nАвтор: {author.mention}\nКанал: {ticket_channel.mention}",color=discord.Color.purple())
+    embed=discord.Embed(title="🎫 Новый тикет",description=f"Раздел: **{title}**\nАвтор: {author.mention}\nКанал: {ticket_channel.mention}",color=discord.Color.purple())
     view=discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="Открыть тикет",emoji="🎫",style=discord.ButtonStyle.link,url=ticket_channel.jump_url))
     await inbox.send(embed=embed,view=view)
@@ -1802,7 +1802,7 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
         except Exception:
             return await interaction.response.send_message("Формат: `13:9`; одна команда должна иметь 13.", ephemeral=True)
         if not db.finish_match(self.match_id,a,b):
-            return await interaction.response.send_message("Матч не най��ен или уже завершён.", ephemeral=True)
+            return await interaction.response.send_message("Матч не найден или уже завершён.", ephemeral=True)
         e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
         await interaction.response.send_message(embed=e)
 
@@ -1922,7 +1922,7 @@ class MapVetoView(discord.ui.View):
         else:
             available="  ".join(f"{MAP_ICONS[m]} **{m}**" for m in self.remaining)
             log="\n".join(self.history[-6:]) or "Банов пока нет."
-            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас ходит:** {self.captain.mention}\n**Дос��упные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
+            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас ходит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
             e.add_field(name="🛡 Капитан CT",value=self.captains[0].mention,inline=True)
             e.add_field(name="💣 Капитан T",value=self.captains[1].mention,inline=True)
             e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=True)
@@ -2468,13 +2468,13 @@ async def on_interaction(interaction):
             status, clr = "✅ принят", discord.Color.green()
             history = next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")), None)
             if history:
-                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый ��чёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
+                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
                 e.set_image(url=sub["screenshot_url"])
                 await history.send(embed=e)
         else:
             db.review_submission(submission_id, "rejected", interaction.user.id)
             status, clr = "❌ отклонён", discord.Color.red()
-        await send_staff_log(interaction.guild,"журнал-матчей",f"🎮 Проверка м��тча #{sub['match_id']}",f"Решение: **{status}**\nМодератор: {interaction.user.mention}\nЗаявка: **#{submission_id}**",clr)
+        await send_staff_log(interaction.guild,"журнал-матчей",f"🎮 Проверка матча #{sub['match_id']}",f"Решение: **{status}**\nМодератор: {interaction.user.mention}\nЗаявка: **#{submission_id}**",clr)
         embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         embed.color = clr
         embed.description = (embed.description or "") + f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
@@ -2565,7 +2565,7 @@ async def party_info_command(interaction:discord.Interaction):
 @app_commands.check(command_channel_access)
 async def party_leave_command(interaction:discord.Interaction):
     result=db.leave_party(interaction.guild_id,interaction.user.id)
-    await interaction.response.send_message("🚪 Ты покин��л пати." if result!="not_in_party" else "Ты не состоишь в пати.",ephemeral=True)
+    await interaction.response.send_message("🚪 Ты покинул пати." if result!="not_in_party" else "Ты не состоишь в пати.",ephemeral=True)
 
 bot.tree.add_command(party_group)
 
@@ -2704,7 +2704,7 @@ async def setup(interaction:discord.Interaction):
             await channel.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
         await channel.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
         await channel.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
-    curator_chat=community_channels["🛠️��чат-кураторов"]
+    curator_chat=community_channels["🛠️・чат-кураторов"]
     await curator_chat.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
     for curator_key in ("curator_qualifications","curator_division","curator_pro"):
         await curator_chat.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,read_message_history=True)
@@ -2721,7 +2721,7 @@ async def setup(interaction:discord.Interaction):
         if old_message.author==g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    e = discord.Embed(title="🎫 ЦЕНТР ОБРАЩЕНИЙ", description="Выбери раздел: нечестная игра, жал��ба на игрока, спор по матчу, обращение по персоналу, обжалование наказания или другой вопрос. Бот создаст приватный канал только для нужной группы персонала.", color=color())
+    e = discord.Embed(title="🎫 ЦЕНТР ОБРАЩЕНИЙ", description="Выбери раздел: нечестная игра, жалоба на игрока, спор по матчу, обращение по персоналу, обжалование наказания или другой вопрос. Бот создаст приватный канал только для нужной группы персонала.", color=color())
     await tickets.send(embed=e, view=TicketView())
 
     for name,(emoji,_) in LEAGUES.items():
@@ -3149,8 +3149,9 @@ async def command_error(interaction,error):
         else:
             message="Команды временно доступны только владельцу и участникам со служебными ролями DOMINION."
     else:
-        print(f"Application command error: {error!r}",flush=True)
-        message="При выполнении команды произошла ошибка. Проверь логи Railway."
+        original=getattr(error,"original",error)
+        print(f"Application command error: {type(original).__name__}: {original!r}",flush=True)
+        message=f"Ошибка команды: `{type(original).__name__}`. {str(original)[:160] or 'Подробности записаны в Railway Logs.'}"
     if interaction.response.is_done():
         await interaction.followup.send(message,ephemeral=True)
     else:

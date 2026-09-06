@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -24,7 +24,7 @@ from elo_levels import elo_level, elo_table_text
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
-BOT_NAME = os.getenv("BOT_NAME", "Seor FACEIT")
+BOT_NAME = os.getenv("BOT_NAME", "Dominion FACEIT")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
@@ -34,6 +34,17 @@ LEAGUES = {
     "Division": ("🟣", 1350),
     "Pro": ("🔴", 1600),
 }
+LEAGUE_CATEGORY_NAMES={
+    "Default":"⚪・DEFAULT LEAGUE",
+    "Qualifications":"🟢・DOMINION RISE",
+    "Division":"🟣・DOMINION ASCEND",
+    "Pro":"🔴・PRO LEAGUE",
+}
+LEAGUE_LOBBY_COUNTS={"Default":3,"Qualifications":3,"Division":2,"Pro":2}
+
+
+def league_category_name(league_name):
+    return LEAGUE_CATEGORY_NAMES[league_name]
 MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami", "Breeze", "Prison"]
 MAP_ICONS = {"Sandstone":"🏜️","Province":"🏘️","Rust":"🏭","Dune":"🌵","Hanami":"🌸","Breeze":"🌊","Prison":"⛓️"}
 MAP_VETO_TIMEOUT = 15
@@ -55,10 +66,11 @@ LEAGUE_ROLES = {
 DEFAULT_LEAGUE_ALIASES=("default League","Default League","default league","Default","деф лига","дефолт лига")
 EXTRA_ROLE_SPECS = {
     "developer": ("Developer", 0x9CCBFF, {"administrator": True}),
-    "bot_role": ("SEOR CYBER bot", 0x99AAB5, {}),
+    "bot_role": ("DOMINION CYBER bot", 0x99AAB5, {}),
     "director": ("GENERAL MÁNAGER", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True}),
     "head_admin": ("head admin", 0x111111, {"manage_guild": True, "manage_channels": True, "manage_roles": True, "moderate_members": True}),
     "ticket_admin": ("Ticket admin", 0xA855F7, {"manage_messages": True, "moderate_members": True}),
+    "ticket_support": ("ticket support", 0x8B5CF6, {"manage_messages": True}),
     "head_ac": ("head ac", 0x1D4ED8, {"manage_messages": True, "moderate_members": True}),
     "games_admin": ("games admin", 0xEC4899, {"manage_messages": True, "move_members": True}),
     "anticheat": ("anticheat", 0x22C55E, {"manage_messages": True}),
@@ -223,7 +235,7 @@ def role_panel_keys():
 
 
 def allowed_role_keys(member):
-    """Роли, которые участник может выдавать и снимать по иерархии SEOR."""
+    """Роли, которые участник может выдавать и снимать по иерархии DOMINION."""
     all_roles = role_panel_keys()
 
     # Владелец Discord-сервера, Owner, General Manager, Developer и Head Admin.
@@ -280,10 +292,10 @@ async def ensure_staff_roles(guild):
         "👑 Owner":"owner","🛡️ Admin":"admin","⚪ Curator Default":None,
         "🟢 Curator Prospect":"qualifications curator","🟣 Curator Division":"division curator","🔴 Curator Pro":"PRO League curator",
         "🟢 Prospect":"qualifications League","🟣 Division":"division League","🔴 Pro":"pro League",
-        "🧬 SEOR Developer":"Developer","🏛️ Project Director":"GENERAL MÁNAGER","🔰 Lead Administrator":"head admin",
+        "🧬 DOMINION Developer":"Developer","🏛️ Project Director":"GENERAL MÁNAGER","🔰 Lead Administrator":"head admin",
         "🎫 Support Administrator":"Ticket admin","⚔️ Anti-Cheat Lead":"head ac","🎮 Match Administrator":"games admin",
         "🧿 Anti-Cheat":"anticheat","🔨 Moderator":"moderator","🎨 Media Creator":"content creator",
-        "📡 Stream Partner":"streamer","💠 SEOR Sponsor":"₽","👑 Pro League Lead":"head of pro League","💎 Premium":"Premium",
+        "📡 Stream Partner":"streamer","💠 DOMINION Sponsor":"₽","👑 Pro League Lead":"head of pro League","💎 Premium":"Premium",
         "🔴 Pro Warning I":"1/3 pro warn","🔴 Pro Warning II":"2/3 pro warn","🔴 Pro Warning III":"3/3 pro warn",
         "🟣 Division Warning I":"1/3 division warn","🟣 Division Warning II":"2/3 division warn","🟣 Division Warning III":"3/3 division warn",
         "🟡 Qualification Warning I":"1/3 Qual warn","🟡 Qualification Warning II":"2/3 Qual warn","🟡 Qualification Warning III":"3/3 Qual warn",
@@ -294,8 +306,8 @@ async def ensure_staff_roles(guild):
         if not old_role: continue
         existing=find_role(guild,new_name) if new_name else None
         try:
-            if new_name and not existing: await old_role.edit(name=new_name,reason="SEOR: точные названия ролей")
-            else: await old_role.delete(reason="SEOR: удаление старой версии роли")
+            if new_name and not existing: await old_role.edit(name=new_name,reason="DOMINION: точные названия ролей")
+            else: await old_role.delete(reason="DOMINION: удаление старой версии роли")
         except discord.Forbidden: pass
     specs={
         "owner": (discord.Color.gold(), discord.Permissions(administrator=True)),
@@ -309,15 +321,15 @@ async def ensure_staff_roles(guild):
         role_color,permissions=specs[key]
         if not role:
             try:
-                role=await guild.create_role(name=name,color=role_color,permissions=permissions,hoist=True,reason="SEOR: создание служебной роли")
+                role=await guild.create_role(name=name,color=role_color,permissions=permissions,hoist=True,reason="DOMINION: создание служебной роли")
             except discord.Forbidden:
-                role=await guild.create_role(name=name,color=role_color,permissions=discord.Permissions.none(),hoist=True,reason="SEOR: создание роли без глобальных прав")
+                role=await guild.create_role(name=name,color=role_color,permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: создание роли без глобальных прав")
         else:
             try:
                 if key=="curator_qualifications":
-                    await role.edit(permissions=permissions,hoist=True,reason="SEOR: синхронизация роли без изменения пользовательского цвета")
+                    await role.edit(permissions=permissions,hoist=True,reason="DOMINION: синхронизация роли без изменения пользовательского цвета")
                 else:
-                    await role.edit(color=role_color,permissions=permissions,hoist=True,reason="SEOR: синхронизация служебной роли")
+                    await role.edit(color=role_color,permissions=permissions,hoist=True,reason="DOMINION: синхронизация служебной роли")
             except discord.Forbidden: pass
         result[key]=role
     league_colors={"default":discord.Color.light_grey(),"qualifications":discord.Color.gold(),"division":discord.Color.purple(),"pro":discord.Color.red()}
@@ -327,23 +339,23 @@ async def ensure_staff_roles(guild):
         else:
             role=find_role(guild,name)
         if not role:
-            role=await guild.create_role(name=name,color=league_colors[key],permissions=discord.Permissions.none(),hoist=True,reason="SEOR: роль доступа к лиге")
+            role=await guild.create_role(name=name,color=league_colors[key],permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: роль доступа к лиге")
         result[f"league_{key}"]=role
     for key,(name,color_value,permission_values) in EXTRA_ROLE_SPECS.items():
         role=find_role(guild,name)
         permissions=discord.Permissions(**permission_values)
         if not role:
             try:
-                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=permissions,hoist=True,reason="SEOR: расширенная роль персонала")
+                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=permissions,hoist=True,reason="DOMINION: расширенная роль персонала")
             except discord.Forbidden:
-                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions.none(),hoist=True,reason="SEOR: роль без глобальных прав")
+                role=await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions.none(),hoist=True,reason="DOMINION: роль без глобальных прав")
         else:
-            try: await role.edit(color=discord.Color(color_value),permissions=permissions,hoist=True,reason="SEOR: синхронизация роли")
+            try: await role.edit(color=discord.Color(color_value),permissions=permissions,hoist=True,reason="DOMINION: синхронизация роли")
             except discord.Forbidden: pass
         result[key]=role
     owner=guild.get_member(guild.owner_id)
     if owner and result["owner"] not in owner.roles:
-        try: await owner.add_roles(result["owner"],reason="SEOR: роль владельца сервера")
+        try: await owner.add_roles(result["owner"],reason="DOMINION: роль владельца сервера")
         except discord.Forbidden: pass
     return result
 
@@ -352,7 +364,7 @@ def league_of(channel: discord.abc.GuildChannel):
     if not channel.category:
         return None
     for name in LEAGUES:
-        if name.lower() in channel.category.name.lower():
+        if channel.category.name==league_category_name(name):
             return name
     return None
 
@@ -467,17 +479,17 @@ class RoomLimit(discord.ui.Modal, title="Лимит комнаты"):
 
 
 def registration_embed(member=None):
-    greeting=f"{member.mention}, добро пожаловать!" if member else "Добро пожаловать в соревновательное сообщество SEOR."
-    e=discord.Embed(title="⚡ ДОБРО ПОЖАЛОВАТЬ В SEOR",description=f"{greeting}\n\nДо регистрации тебе доступен только этот раздел. Подтверди игровой профиль — после этого откроются основные каналы сервера.",color=color())
+    greeting=f"{member.mention}, добро пожаловать!" if member else "Добро пожаловать в соревновательное сообщество DOMINION."
+    e=discord.Embed(title="⚡ ДОБРО ПОЖАЛОВАТЬ В DOMINION",description=f"{greeting}\n\nДо регистрации тебе доступен только этот раздел. Подтверди игровой профиль — после этого откроются основные каналы сервера.",color=color())
     first_step="Открой канал **📋・регистрация** и выбери нужную кнопку." if member else "Выбери **Регистрация** для нового профиля или **Войти по данным** для восстановления старого."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
     e.add_field(name="02  УКАЖИ ДАННЫЕ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
     e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роли **{REGISTERED_ROLE_NAME}** и **default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
-    e.set_footer(text="SEOR CYBER • competitive platform")
+    e.set_footer(text="DOMINION CYBER • competitive platform")
     return e
 
 
-class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
+class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
     nickname = discord.ui.TextInput(label="Игров��й ник", placeholder="Например: Versus", min_length=2, max_length=24)
     game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="Например: 245507174", max_length=30)
     async def on_submit(self, interaction):
@@ -492,25 +504,25 @@ class GameIdModal(discord.ui.Modal, title="Регистрация SEOR"):
             return await interaction.response.send_message("❌ Этот Standoff 2 ID уже занят. Если это твой старый профиль, используй кнопку **Войти по данным**.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
         db.set_registration(interaction.guild_id,interaction.user.id,nickname,value)
-        try: await interaction.user.edit(nick=nickname,reason="SEOR: игровой ник при регистрации")
+        try: await interaction.user.edit(nick=nickname,reason="DOMINION: игровой ник при регистрации")
         except discord.Forbidden: pass
         roles=await ensure_staff_roles(interaction.guild)
         role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
         if not role:
-            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
         try:
-            await interaction.user.add_roles(role,reason="SEOR: регистрация игрового профиля")
+            await interaction.user.add_roles(role,reason="DOMINION: регистрация игрового профиля")
         except discord.Forbidden:
             return await interaction.followup.send("Профиль сохранён, но роль `зарегистрирован` не выдана. Подними роль бота выше неё.",ephemeral=True)
         try:
-            await interaction.user.add_roles(roles["league_default"],reason="SEOR: автоматическая Default League после регистрации")
+            await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после регистрации")
         except discord.Forbidden:
             return await interaction.followup.send("Регистрация завершена, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
         await interaction.followup.send(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}** · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
 
 
-class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
+class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
     nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Ник из старого профиля", min_length=2, max_length=24)
     game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="ID из старого профиля", max_length=30)
 
@@ -523,18 +535,18 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в SEOR FACEIT"):
         if not profile:
             return await interaction.response.send_message("❌ Профиль с таким ником и Standoff 2 ID не найден. Проверь данные или пройди новую регистрацию.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
-        try: await interaction.user.edit(nick=profile["nickname"],reason="SEOR: восстановление игрового профиля")
+        try: await interaction.user.edit(nick=profile["nickname"],reason="DOMINION: восстановление игрового профиля")
         except discord.Forbidden: pass
         roles=await ensure_staff_roles(interaction.guild)
         role=find_role(interaction.guild,REGISTERED_ROLE_NAME)
         if not role:
-            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+            role=await interaction.guild.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
         try:
-            await interaction.user.add_roles(role,reason="SEOR: восстановление регистрации")
+            await interaction.user.add_roles(role,reason="DOMINION: восстановление регистрации")
         except discord.Forbidden:
             return await interaction.followup.send("Профиль восстановлен, но роль `зарегистрирован` не выдана. Подними роль бота выше неё.",ephemeral=True)
         try:
-            await interaction.user.add_roles(roles["league_default"],reason="SEOR: автоматическая Default League после входа")
+            await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
             return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
@@ -620,7 +632,7 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
             raw="Модель Gemini из настроек больше недоступна. Бот попробовал актуальную модель; если ошибка осталась, проверь GEMINI_VISION_MODEL и доступ API."
         notes.append("⚠️ "+raw[:700])
     e.add_field(name="Проверка модератором",value=("\n".join(notes)[:1024] if notes else "Сверь счёт, команды и статистику со скриншотом."),inline=False)
-    e.set_footer(text="SEOR FACEIT · принять только после сверки скриншота")
+    e.set_footer(text="DOMINION FACEIT · принять только после сверки скриншота")
     return e
 
 
@@ -759,7 +771,7 @@ def dashboard_panel_embed(section):
     e=discord.Embed(title=f"{emoji} {title}",description=description,color=section_colors[section])
     e.add_field(name="Навигация",value="Выбери раздел в меню ниже.",inline=True)
     e.add_field(name="Доступ",value="Панель видна только тебе.",inline=True)
-    e.set_footer(text="SEOR CYBER • игровая панель")
+    e.set_footer(text="DOMINION CYBER • игровая панель")
     return e
 
 
@@ -769,7 +781,7 @@ def dashboard_home_embed():
     e.add_field(name="🎮 Матчи",value="История • поиск • результаты",inline=True)
     e.add_field(name="👥 Команда",value="Пати • совместный подбор",inline=True)
     e.add_field(name="🛡️ Персонал",value="Создание и выдача служебных ролей",inline=False)
-    e.set_footer(text="SEOR CYBER · FACEIT STANDOFF 2")
+    e.set_footer(text="DOMINION CYBER · FACEIT STANDOFF 2")
     return e
 
 
@@ -881,7 +893,7 @@ class StaffRoleSelect(discord.ui.Select):
     def __init__(self, allowed_keys):
         options=[discord.SelectOption(label=name,value=key,description="Служебная роль") for key,name in STAFF_ROLES.items() if key in allowed_keys]
         options += [discord.SelectOption(label=name,value=f"league_{key}",description="Доступ игрока к лиге") for key,name in LEAGUE_ROLES.items() if f"league_{key}" in allowed_keys]
-        options += [discord.SelectOption(label=EXTRA_ROLE_SPECS[key][0],value=key,description="Расширенная роль SEOR") for key in ROLE_PANEL_EXTRAS if key in allowed_keys]
+        options += [discord.SelectOption(label=EXTRA_ROLE_SPECS[key][0],value=key,description="Расширенная роль DOMINION") for key in ROLE_PANEL_EXTRAS if key in allowed_keys]
         super().__init__(placeholder="Выбери доступную роль",options=options,min_values=1,max_values=1,row=1)
     async def callback(self,interaction):
         self.view.role_key=self.values[0]
@@ -937,7 +949,7 @@ class RolePanelView(discord.ui.View):
         member,role=await self.selected(interaction)
         if not member or not role: return
         try:
-            await member.add_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+            await member.add_roles(role,reason=f"DOMINION dashboard: {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send("Не удалось выдать роль: подними роль бота выше выдаваемой роли и включи ему право `Управлять ролями`.",ephemeral=True)
         await interaction.followup.send(f"{role.mention} выдана участнику {member.mention}.",ephemeral=True)
@@ -950,7 +962,7 @@ class RolePanelView(discord.ui.View):
         if member.id==interaction.guild.owner_id and self.role_key=="owner":
             return await interaction.followup.send("Нельзя снять Owner с владельца сервера.",ephemeral=True)
         try:
-            await member.remove_roles(role,reason=f"SEOR dashboard: {interaction.user}")
+            await member.remove_roles(role,reason=f"DOMINION dashboard: {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send("Роль бота должна находиться выше снимаемой роли.",ephemeral=True)
         await interaction.followup.send(f"{role.mention} снята с участника {member.mention}.",ephemeral=True)
@@ -1161,8 +1173,8 @@ class WarnReasonModal(discord.ui.Modal,title="Выдать варн"):
             return await interaction.followup.send("Бот не может выдать эту роль: подними роль бота выше ролей варнов.",ephemeral=True)
         try:
             if old_roles:
-                await member.remove_roles(*old_roles,reason=f"SEOR FACEIT warn upgrade by {interaction.user}")
-            await member.add_roles(role,reason=f"SEOR FACEIT {WARN_TYPE_LABELS[self.warn_type]} by {interaction.user}")
+                await member.remove_roles(*old_roles,reason=f"DOMINION FACEIT warn upgrade by {interaction.user}")
+            await member.add_roles(role,reason=f"DOMINION FACEIT {WARN_TYPE_LABELS[self.warn_type]} by {interaction.user}")
         except discord.Forbidden:
             return await interaction.followup.send("Discord не разрешил выдать роль варна. Проверь право `Управлять ролями` и иерархию ролей.",ephemeral=True)
         reason=str(self.reason).strip()
@@ -1272,7 +1284,7 @@ class UnbanMemberModal(discord.ui.Modal,title="Разбанить и верну�
         reason=str(self.reason).strip() or "не указана"
         try:
             user=await bot.fetch_user(user_id)
-            await interaction.guild.unban(user,reason=f"SEOR FACEIT unban by {interaction.user}: {reason}")
+            await interaction.guild.unban(user,reason=f"DOMINION FACEIT unban by {interaction.user}: {reason}")
         except discord.NotFound:
             return await interaction.followup.send("Пользователь не найден в списке заблокированных.",ephemeral=True)
         except (discord.Forbidden,discord.HTTPException):
@@ -1281,7 +1293,7 @@ class UnbanMemberModal(discord.ui.Modal,title="Разбанить и верну�
         for channel in interaction.guild.text_channels:
             if channel.permissions_for(interaction.guild.me).create_instant_invite:
                 try:
-                    invite=await channel.create_invite(max_age=86400,max_uses=1,unique=True,reason="SEOR FACEIT: возврат после разбана")
+                    invite=await channel.create_invite(max_age=86400,max_uses=1,unique=True,reason="DOMINION FACEIT: возврат после разбана")
                     break
                 except discord.HTTPException:
                     continue
@@ -1325,7 +1337,7 @@ class RemoveSanctionView(discord.ui.View):
         await interaction.response.defer(ephemeral=True,thinking=True)
         if self.action=="timeout":
             try:
-                await member.timeout(None,reason=f"SEOR FACEIT timeout removed by {interaction.user}")
+                await member.timeout(None,reason=f"DOMINION FACEIT timeout removed by {interaction.user}")
             except (discord.Forbidden,discord.HTTPException):
                 return await interaction.followup.send("Не удалось снять мут. Проверь права бота и иерархию ролей.",ephemeral=True)
             removed_text="мут / timeout"
@@ -1336,7 +1348,7 @@ class RemoveSanctionView(discord.ui.View):
             if not removable:
                 return await interaction.followup.send("У участника нет выбранного варна или бот не может управлять его ролью.",ephemeral=True)
             try:
-                await member.remove_roles(*removable,reason=f"SEOR FACEIT warnings removed by {interaction.user}")
+                await member.remove_roles(*removable,reason=f"DOMINION FACEIT warnings removed by {interaction.user}")
             except discord.Forbidden:
                 return await interaction.followup.send("Не удалось снять роли варнов. Подними роль бота выше них.",ephemeral=True)
             removed_text=", ".join(role.name for role in removable)
@@ -1386,7 +1398,7 @@ class CloseTicketModal(discord.ui.Modal,title="Закрыть тикет"):
         await interaction.response.defer(ephemeral=True,thinking=True)
         await send_staff_log(interaction.guild,"журнал-тикетов","🔒 Тикет закрыт",f"Канал: **{name}**\nПричина: {str(self.reason) or 'не указана'}\nЗакрыл: {interaction.user.mention}")
         await interaction.followup.send(f"Тикет **{name}** закрыт.",ephemeral=True)
-        await channel.delete(reason=f"SEOR ticket closed by {interaction.user}")
+        await channel.delete(reason=f"DOMINION ticket closed by {interaction.user}")
 
 
 class StaffControlView(discord.ui.View):
@@ -1430,6 +1442,108 @@ class StaffControlView(discord.ui.View):
         if not await self.allowed(i): return
         channels=[c.mention for c in i.guild.text_channels if "журнал" in c.name or c.name.endswith("логи-бота")]
         await i.response.send_message("Журналы аудита:\n"+(" · ".join(channels) or "Каналы не найдены."),ephemeral=True)
+
+
+STAFF_APPLICATION_TYPES={
+    "moderator":("Moderator","moderator","📨・заявки-модераторы"),
+    "ticket_support":("Ticket Support","ticket_support","📨・заявки-тикет-саппорт"),
+}
+
+
+def can_review_staff_application(member,application_type):
+    senior=(STAFF_ROLES["owner"],STAFF_ROLES["admin"],EXTRA_ROLE_SPECS["developer"][0],EXTRA_ROLE_SPECS["director"][0],EXTRA_ROLE_SPECS["head_admin"][0])
+    if member.id==member.guild.owner_id or any(has_role(member,name) for name in senior): return True
+    return application_type=="ticket_support" and has_role(member,EXTRA_ROLE_SPECS["ticket_admin"][0])
+
+
+class StaffApplicationModal(discord.ui.Modal):
+    age=discord.ui.TextInput(label="Возраст",placeholder="Например: 16",max_length=3)
+    experience=discord.ui.TextInput(label="Опыт",style=discord.TextStyle.paragraph,placeholder="Опиши опыт модерации или поддержки",max_length=700)
+    motivation=discord.ui.TextInput(label="Почему именно ты?",style=discord.TextStyle.paragraph,max_length=700)
+    online=discord.ui.TextInput(label="Онлайн в день",placeholder="Например: 4–6 часов",max_length=80)
+    def __init__(self,application_type):
+        title=STAFF_APPLICATION_TYPES[application_type][0]
+        super().__init__(title=f"Заявка: {title}"); self.application_type=application_type
+    async def on_submit(self,interaction):
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        title,role_key,channel_name=STAFF_APPLICATION_TYPES[self.application_type]
+        channel=discord.utils.get(interaction.guild.text_channels,name=channel_name)
+        if not channel:
+            await ensure_staff_application_system(interaction.guild)
+            channel=discord.utils.get(interaction.guild.text_channels,name=channel_name)
+        if not channel:
+            return await interaction.followup.send("Канал заявок не найден. Сообщи администрации.",ephemeral=True)
+        embed=discord.Embed(title=f"📨 Заявка на {title}",description=f"Кандидат: {interaction.user.mention} (`{interaction.user.id}`)",color=discord.Color.purple(),timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="Возраст",value=str(self.age)[:1024],inline=True)
+        embed.add_field(name="Онлайн",value=str(self.online)[:1024],inline=True)
+        embed.add_field(name="Опыт",value=str(self.experience)[:1024],inline=False)
+        embed.add_field(name="Мотивация",value=str(self.motivation)[:1024],inline=False)
+        view=discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(label="Принять",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"staffapp:accept:{self.application_type}:{interaction.user.id}"))
+        view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"staffapp:reject:{self.application_type}:{interaction.user.id}"))
+        await channel.send(embed=embed,view=view)
+        await interaction.followup.send(f"✅ Заявка на **{title}** отправлена.",ephemeral=True)
+
+
+class StaffApplicationPanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Заявка на Moderator",emoji="🛡️",style=discord.ButtonStyle.primary,custom_id="staffapp:open:moderator")
+    async def moderator(self,interaction,button): await interaction.response.send_modal(StaffApplicationModal("moderator"))
+    @discord.ui.button(label="Заявка на Ticket Support",emoji="🎫",style=discord.ButtonStyle.secondary,custom_id="staffapp:open:ticket_support")
+    async def ticket_support(self,interaction,button): await interaction.response.send_modal(StaffApplicationModal("ticket_support"))
+
+
+async def handle_staff_application_review(interaction,cid):
+    try: _,action,application_type,user_id=cid.split(":",3); user_id=int(user_id)
+    except (ValueError,TypeError): return await interaction.response.send_message("Некорректная заявка.",ephemeral=True)
+    if not can_review_staff_application(interaction.user,application_type):
+        return await interaction.response.send_message("У тебя нет доступа к этой заявке.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    member=interaction.guild.get_member(user_id)
+    if not member:
+        return await interaction.followup.send("Кандидат больше не находится на сервере.",ephemeral=True)
+    title,role_key,_=STAFF_APPLICATION_TYPES[application_type]
+    status="принята" if action=="accept" else "отклонена"
+    if action=="accept":
+        roles=await ensure_staff_roles(interaction.guild); role=roles.get(role_key)
+        if not role: return await interaction.followup.send("Целевая роль не найдена.",ephemeral=True)
+        try: await member.add_roles(role,reason=f"DOMINION staff application accepted by {interaction.user}")
+        except discord.Forbidden: return await interaction.followup.send("Бот не может выдать роль. Проверь иерархию.",ephemeral=True)
+    embed=interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(title=f"Заявка на {title}")
+    embed.color=discord.Color.green() if action=="accept" else discord.Color.red()
+    embed.add_field(name="Решение",value=f"**{status.upper()}** • {interaction.user.mention}",inline=False)
+    await interaction.message.edit(embed=embed,view=None)
+    try: await member.send(f"Твоя заявка на **{title}** в **{interaction.guild.name}** {status}.")
+    except discord.HTTPException: pass
+    await interaction.followup.send(f"Заявка {status}.",ephemeral=True)
+
+
+async def ensure_staff_application_system(guild):
+    roles=await ensure_staff_roles(guild)
+    staff_category=discord.utils.get(guild.categories,name="🛡️ DOMINION STAFF") or await guild.create_category("🛡️ DOMINION STAFF")
+    senior_keys=("owner","admin","developer","director","head_admin")
+    for application_type,(title,role_key,channel_name) in STAFF_APPLICATION_TYPES.items():
+        channel=discord.utils.get(guild.text_channels,name=channel_name)
+        if not channel:
+            overwrites={guild.default_role:discord.PermissionOverwrite(view_channel=False),guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True)}
+            for key in senior_keys:
+                role=roles.get(key)
+                if role: overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
+            if application_type=="ticket_support" and roles.get("ticket_admin"):
+                overwrites[roles["ticket_admin"]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
+            channel=await guild.create_text_channel(channel_name,category=staff_category,overwrites=overwrites)
+    support=discord.utils.get(guild.categories,name="🔍 DOMINION SUPPORT") or discord.utils.get(guild.categories,name="🏠 DOMINION COMMUNITY")
+    if not support: support=await guild.create_category("🔍 DOMINION SUPPORT")
+    panel=discord.utils.get(guild.text_channels,name="📨・заявки-на-стафф")
+    if not panel: panel=await guild.create_text_channel("📨・заявки-на-стафф",category=support)
+    found=False
+    async for message in panel.history(limit=30):
+        if message.author==guild.me and message.embeds and message.embeds[0].title=="👑 DOMINION STAFF APPLICATIONS": found=True; break
+    if not found:
+        embed=discord.Embed(title="👑 DOMINION STAFF APPLICATIONS",description="Выбери направление и заполни анкету. Заявку увидит только ответственная группа администрации.",color=discord.Color.purple())
+        embed.add_field(name="Moderator",value="Заявку рассматривают Admin и старшее руководство.",inline=False)
+        embed.add_field(name="Ticket Support",value="Заявку рассматривают Ticket Admin и старшее руководство.",inline=False)
+        await panel.send(embed=embed,view=StaffApplicationPanelView())
 
 
 class TicketTypeSelect(discord.ui.Select):
@@ -1542,7 +1656,7 @@ async def ensure_admin_panel_buttons(guild):
         async for message in channel.history(limit=30):
             if message.author!=guild.me or not message.embeds:
                 continue
-            if message.embeds[0].title not in {"🎛️ ПАНЕЛЬ АДМИНА","🛡️ SEOR CONTROL DESK"}:
+            if message.embeds[0].title not in {"🎛️ ПАНЕЛЬ АДМИНА","🛡️ DOMINION CONTROL DESK"}:
                 continue
             component_ids={getattr(child,"custom_id",None) for row in message.components for child in getattr(row,"children",())}
             if "staff:remove_sanction" not in component_ids:
@@ -1560,9 +1674,9 @@ async def ensure_ticket_inbox(guild):
     existing=discord.utils.get(guild.text_channels,name=channel_name)
     if existing:
         return existing
-    category=discord.utils.get(guild.categories,name="🛡️ SEOR STAFF")
+    category=discord.utils.get(guild.categories,name="🛡️ DOMINION STAFF")
     if not category:
-        category=await guild.create_category("🛡️ SEOR STAFF",reason="SEOR FACEIT: раздел администрации")
+        category=await guild.create_category("🛡️ DOMINION STAFF",reason="DOMINION FACEIT: раздел администрации")
     overwrites={
         guild.default_role:discord.PermissionOverwrite(view_channel=False),
         guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True,read_message_history=True),
@@ -1574,7 +1688,7 @@ async def ensure_ticket_inbox(guild):
         role=find_role(guild,name) if name else None
         if role:
             overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
-    channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="SEOR FACEIT: входящие тикеты")
+    channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="DOMINION FACEIT: входящие тикеты")
     intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смогут только профильные сотрудники и старшее руководство.",color=color())
     await channel.send(embed=intro)
     return channel
@@ -1608,7 +1722,7 @@ class CloseCurrentTicketModal(discord.ui.Modal,title="Закрытие тике�
         await interaction.followup.send("Тикет закрывается…",ephemeral=True)
         await asyncio.sleep(1)
         try:
-            await channel.delete(reason=f"SEOR FACEIT ticket closed by {interaction.user}: {reason}")
+            await channel.delete(reason=f"DOMINION FACEIT ticket closed by {interaction.user}: {reason}")
         except discord.Forbidden:
             pass
 
@@ -1633,7 +1747,7 @@ class TicketChannelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True,thinking=True)
         topic=(channel.topic or "").split(":claimed:",1)[0]+f":claimed:{interaction.user.id}"
         try:
-            await channel.edit(topic=topic,reason=f"SEOR FACEIT ticket claimed by {interaction.user}")
+            await channel.edit(topic=topic,reason=f"DOMINION FACEIT ticket claimed by {interaction.user}")
             await channel.send(embed=discord.Embed(title="🙋 Тикет взят в работу",description=f"Ответственный: {interaction.user.mention}",color=discord.Color.green()))
             await interaction.followup.send("Ты взял этот тикет в работу.",ephemeral=True)
         except discord.Forbidden:
@@ -1813,7 +1927,7 @@ class MapVetoView(discord.ui.View):
             e.add_field(name="💣 Капитан T",value=self.captains[1].mention,inline=True)
             e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=True)
             e.add_field(name="История банов",value=log,inline=False)
-        e.set_footer(text=f"SEOR MAP VETO • {self.league} • осталось карт: {len(self.remaining)}")
+        e.set_footer(text=f"DOMINION MAP VETO • {self.league} • осталось карт: {len(self.remaining)}")
         return e
 
     def rebuild(self):
@@ -1929,7 +2043,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
 @bot.event
 async def setup_hook():
     db.init_db()
-    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView()); bot.add_view(TicketChannelView()); bot.add_view(RegistrationView()); bot.add_view(StaffControlView()); bot.add_view(LeagueTopView())
+    bot.add_view(QueueView()); bot.add_view(RoomPanel()); bot.add_view(ResultSubmitView()); bot.add_view(DashboardView()); bot.add_view(TicketView()); bot.add_view(TicketChannelView()); bot.add_view(RegistrationView()); bot.add_view(StaffControlView()); bot.add_view(LeagueTopView()); bot.add_view(StaffApplicationPanelView())
     if GUILD_ID:
         guild=discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -1951,7 +2065,7 @@ async def ensure_special_warn_roles(guild):
         first_role=find_role(guild,first_name)
         if old_role and not first_role:
             try:
-                await old_role.edit(name=first_name,reason="SEOR FACEIT: перенос варна в систему 1/3")
+                await old_role.edit(name=first_name,reason="DOMINION FACEIT: перенос варна в систему 1/3")
             except discord.Forbidden:
                 pass
     tier_keys=(
@@ -1964,7 +2078,7 @@ async def ensure_special_warn_roles(guild):
         if find_role(guild,name):
             continue
         try:
-            await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions(**permission_values),hoist=True,reason="SEOR FACEIT: роль варна 1/3")
+            await guild.create_role(name=name,color=discord.Color(color_value),permissions=discord.Permissions(**permission_values),hoist=True,reason="DOMINION FACEIT: роль варна 1/3")
             created+=1
         except discord.Forbidden:
             pass
@@ -1975,7 +2089,7 @@ async def default_league_role(guild):
     return next((role for role in guild.roles if any(role_name_matches(role.name,alias) for alias in DEFAULT_LEAGUE_ALIASES)),None)
 
 
-async def give_default_league_to_member(member,reason="SEOR: Default League для зарегистрированного игрока"):
+async def give_default_league_to_member(member,reason="DOMINION: Default League для зарегистрированного игрока"):
     if member.bot or not has_role(member,REGISTERED_ROLE_NAME):
         return False
     role=await default_league_role(member.guild)
@@ -2014,7 +2128,7 @@ async def give_default_league_to_registered(guild):
             stats["already"]+=1
             continue
         try:
-            await member.add_roles(default_role,reason="SEOR FACEIT: массовая синхронизация Default League")
+            await member.add_roles(default_role,reason="DOMINION FACEIT: массовая синхронизация Default League")
             stats["assigned"]+=1
         except (discord.Forbidden,discord.HTTPException) as exc:
             stats["failed"]+=1
@@ -2025,7 +2139,7 @@ async def give_default_league_to_registered(guild):
 async def apply_overwrite_if_changed(target,role,**values):
     desired=discord.PermissionOverwrite(**values)
     if target.overwrites_for(role).pair()!=desired.pair():
-        await target.set_permissions(role,overwrite=desired,reason="SEOR FACEIT: приватный доступ лиги")
+        await target.set_permissions(role,overwrite=desired,reason="DOMINION FACEIT: приватный доступ лиги")
         return True
     return False
 
@@ -2046,7 +2160,7 @@ async def apply_league_channel_privacy(guild):
         curator=find_role(guild,curator_name) if curator_name else None
         if not league_role:
             continue
-        category_name=f"{emoji} SEOR {league_name.upper()}"
+        category_name=league_category_name(league_name)
         categories=[category for category in guild.categories if category.name==category_name]
         for category in categories:
             targets=[category,*category.channels]
@@ -2102,7 +2216,7 @@ async def merge_channel_permissions(target,role,**values):
     for key,value in values.items():
         setattr(overwrite,key,value)
     if overwrite.pair()!=before:
-        await target.set_permissions(role,overwrite=overwrite,reason="SEOR FACEIT: канал только для чтения")
+        await target.set_permissions(role,overwrite=overwrite,reason="DOMINION FACEIT: канал только для чтения")
         return True
     return False
 
@@ -2160,10 +2274,40 @@ async def ensure_admin_panel_channel_name(guild):
     if existing or not old_channel:
         return existing or old_channel
     try:
-        await old_channel.edit(name=new_name,reason="SEOR FACEIT: новое название панели администратора")
+        await old_channel.edit(name=new_name,reason="DOMINION FACEIT: новое название панели администратора")
     except discord.Forbidden:
         return old_channel
     return old_channel
+
+
+async def migrate_dominion_branding(guild):
+    general={
+        "▶️ SEOR START":"▶️ DOMINION START","📡 SEOR INFO":"📡 DOMINION INFO","🏠 SEOR COMMUNITY":"🏠 DOMINION COMMUNITY",
+        "🔍 SEOR SUPPORT":"🔍 DOMINION SUPPORT","🎧 SEOR PRIVATE":"🎧 DOMINION PRIVATE","📮 SEOR RESULTS":"📮 DOMINION RESULTS",
+        "🛡️ SEOR STAFF":"🛡️ DOMINION STAFF","📡 SEOR AUDIT":"📡 DOMINION AUDIT",
+    }
+    for category in guild.categories:
+        target=general.get(category.name)
+        if target and not discord.utils.get(guild.categories,name=target):
+            try: await category.edit(name=target,reason="Dominion FACEIT rebrand")
+            except discord.HTTPException: pass
+    for league,(emoji,_) in LEAGUES.items():
+        target=league_category_name(league)
+        old_names={f"{emoji} SEOR {league.upper()}",f"{emoji} DOMINION {league.upper()}"}
+        category=next((c for c in guild.categories if c.name in old_names),None)
+        if category and not discord.utils.get(guild.categories,name=target):
+            try: await category.edit(name=target,reason="Dominion league rebrand")
+            except discord.HTTPException: pass
+        category=discord.utils.get(guild.categories,name=target) or category
+        if category:
+            old_ranked=discord.utils.get(category.text_channels,name="🎮・ranked")
+            if old_ranked and not discord.utils.get(category.text_channels,name="ranked"):
+                try: await old_ranked.edit(name="ranked",reason="Dominion league channel rebrand")
+                except discord.HTTPException: pass
+            for voice in category.voice_channels:
+                if voice.name.startswith("🔊 Lobby "):
+                    try: await voice.edit(name=voice.name.replace("🔊 ","",1),reason="Dominion lobby rebrand")
+                    except discord.HTTPException: pass
 
 
 @bot.event
@@ -2171,6 +2315,8 @@ async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
     for guild in bot.guilds:
+        await migrate_dominion_branding(guild)
+        await ensure_staff_application_system(guild)
         warn_roles_created=await ensure_special_warn_roles(guild)
         if warn_roles_created:
             print(f"{guild.name}: создано ролей варнов: {warn_roles_created}",flush=True)
@@ -2196,7 +2342,7 @@ async def on_ready():
 @bot.event
 async def on_guild_channel_create(channel):
     category=getattr(channel,"category",None)
-    if category and any(category.name==f"{emoji} SEOR {name.upper()}" for name,(emoji,_) in LEAGUES.items()):
+    if category and any(category.name==league_category_name(name) for name,(emoji,_) in LEAGUES.items()):
         await apply_league_channel_privacy(channel.guild)
     if isinstance(channel,discord.TextChannel) and is_public_readonly_channel(channel):
         await apply_public_readonly_channels(channel.guild)
@@ -2213,17 +2359,19 @@ async def on_member_join(member):
 async def on_member_update(before,after):
     if after.bot: return
     if has_role(after,REGISTERED_ROLE_NAME):
-        await give_default_league_to_member(after,reason="SEOR: Default League после получения роли регистрации")
+        await give_default_league_to_member(after,reason="DOMINION: Default League после получения роли регистрации")
 
 
 @bot.event
 async def on_interaction(interaction):
     if interaction.type != discord.InteractionType.component: return
     cid=interaction.data.get("custom_id","")
+    if cid.startswith("staffapp:accept:") or cid.startswith("staffapp:reject:"):
+        return await handle_staff_application_review(interaction,cid)
     if cid in {"seor:registration:start","seor:registration:login"}:
         try:
             if has_role(interaction.user,REGISTERED_ROLE_NAME):
-                message="Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд." if cid.endswith(":start") else "Ты уже вошёл в профиль SEOR."
+                message="Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд." if cid.endswith(":start") else "Ты уже вошёл в профиль DOMINION."
                 return await interaction.response.send_message(message,ephemeral=True)
             modal=GameIdModal() if cid.endswith(":start") else LoginByDataModal()
             return await interaction.response.send_modal(modal)
@@ -2391,13 +2539,13 @@ async def setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     g=interaction.guild
     try:
-        await g.edit(default_notifications=discord.NotificationLevel.only_mentions,reason="SEOR FACEIT: уведомления сервера только по упоминаниям")
+        await g.edit(default_notifications=discord.NotificationLevel.only_mentions,reason="DOMINION FACEIT: уведомления сервера только по упоминаниям")
     except discord.Forbidden:
         await interaction.followup.send("Не удалось включить режим уведомлений «Только упоминания»: боту нужно право `Управлять сервером`.",ephemeral=True)
     staff_roles=await ensure_staff_roles(g)
     registered_role=find_role(g,REGISTERED_ROLE_NAME)
     if not registered_role:
-        registered_role=await g.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="SEOR: роль регистрации")
+        registered_role=await g.create_role(name=REGISTERED_ROLE_NAME,color=discord.Color.green(),permissions=discord.Permissions.none(),hoist=False,reason="DOMINION: роль регистрации")
     default_role=staff_roles["league_default"]
     for member in g.members:
         if member.bot: continue
@@ -2405,10 +2553,10 @@ async def setup(interaction:discord.Interaction):
         is_registered=has_role(member,REGISTERED_ROLE_NAME) or has_saved_profile
         if not is_registered: continue
         if not has_role(member,REGISTERED_ROLE_NAME):
-            try: await member.add_roles(registered_role,reason="SEOR: перенос регистрации")
+            try: await member.add_roles(registered_role,reason="DOMINION: перенос регистрации")
             except discord.Forbidden: continue
         if default_role not in member.roles:
-            try: await member.add_roles(default_role,reason="SEOR: Default League зарегистрированному игроку")
+            try: await member.add_roles(default_role,reason="DOMINION: Default League зарегистрированному игроку")
             except discord.Forbidden: pass
 
     # /setup синхронизирует только структуру, которой управляет бот.
@@ -2442,7 +2590,7 @@ async def setup(interaction:discord.Interaction):
                 await set_permissions_if_changed(channel,g.default_role,view_channel=False,connect=False)
                 await set_permissions_if_changed(channel,registered_role,view_channel=True,connect=True,speak=True)
 
-    onboarding=await category("▶️ SEOR START")
+    onboarding=await category("▶️ DOMINION START")
     await onboarding.set_permissions(g.default_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=False)
     await onboarding.set_permissions(registered_role,view_channel=False)
     await sync_channels(onboarding,text_names=("📋・регистрация",))
@@ -2456,13 +2604,13 @@ async def setup(interaction:discord.Interaction):
             except discord.HTTPException: pass
     await registration_channel.send(embed=registration_embed(),view=RegistrationView())
 
-    info = await category("📡 SEOR INFO")
+    info = await category("📡 DOMINION INFO")
     info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
     await sync_channels(info, text_names=info_names)
     for channel_name in info_names:
         await text(info, channel_name)
 
-    start = await category("⌨️ SEOR COMMANDS")
+    start = await category("⌨️ DOMINION COMMANDS")
     await start.set_permissions(g.default_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
     await sync_channels(start, text_names=("🤖・команды", "📊・дашборд", "🏆・топ-сервера"))
     commands_channel=await text(start, "🤖・команды")
@@ -2477,7 +2625,7 @@ async def setup(interaction:discord.Interaction):
         if old_message.author == g.me:
             try: await old_message.delete()
             except discord.HTTPException: pass
-    commands_embed=discord.Embed(title="⌨️ КОМАНДЫ SEOR",description="Используй slash-команды только в этом канале.",color=color())
+    commands_embed=discord.Embed(title="⌨️ КОМАНДЫ DOMINION",description="Используй slash-команды только в этом канале.",color=color())
     commands_embed.add_field(name="👤 Игрок",value="`/profile` — профиль\n`/set_game_id` — игровой ID\n`/standard` — норматив K/D\n`/qualification` — личная проверка норматива\n`/top` — топ игроков",inline=False)
     commands_embed.add_field(name="🎮 Матчи",value="Кнопка **Отправить результат** — форма с номером матча и скриншотом\n`/match_info` — информация о матче",inline=False)
     commands_embed.add_field(name="🛡️ Администрация",value="`/set_nickname` — изменить ник участника на сервере",inline=False)
@@ -2498,7 +2646,7 @@ async def setup(interaction:discord.Interaction):
     e = dashboard_home_embed()
     await dashboard.send(embed=e, view=DashboardView())
 
-    community = await category("💬 SEOR COMMUNITY")
+    community = await category("💬 DOMINION COMMUNITY")
     community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro", "🟣・чат-division", "🟡・чат-qualifications", "🛠️・чат-кураторов")
     await sync_channels(community, text_names=community_names, voice_names=("🌐 Общий голос",))
     community_channels={channel_name:await text(community,channel_name) for channel_name in community_names}
@@ -2523,7 +2671,7 @@ async def setup(interaction:discord.Interaction):
     if not discord.utils.get(community.voice_channels, name="🌐 Общий голос"):
         await g.create_voice_channel("🌐 Общий голос", category=community, user_limit=99)
 
-    support = await category("🆘 SEOR SUPPORT")
+    support = await category("🆘 DOMINION SUPPORT")
     await sync_channels(support, text_names=("🎫・создать-тикет", "⚠️・наказания"))
     tickets = await text(support, "🎫・создать-тикет")
     await text(support, "⚠️・наказания")
@@ -2535,47 +2683,47 @@ async def setup(interaction:discord.Interaction):
     await tickets.send(embed=e, view=TicketView())
 
     for name,(emoji,_) in LEAGUES.items():
-        cat_name=f"{emoji} SEOR {name.upper()}"
-        cats=[c for c in g.categories if c.name == cat_name]
-        while len(cats) < 3:
-            cats.append(await g.create_category(cat_name))
-        for i,cat in enumerate(cats[:3],1):
-            curator=staff_roles.get(f"curator_{name.lower()}")
-            if curator:
-                await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
-            league_role=staff_roles[f"league_{name.lower()}"]
-            await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-            await cat.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
-            await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
-            await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
-            await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
-            await sync_channels(cat, text_names=("🎮・ranked",), voice_names=(f"🔊 Lobby {i}",), preserve_voice_prefixes=("🛡 CT · #", "💣 T · #"))
-            ranked=discord.utils.get(cat.text_channels,name="🎮・ranked") or await g.create_text_channel("🎮・ranked",category=cat)
-            lobby=discord.utils.get(cat.voice_channels,name=f"🔊 Lobby {i}")
-            if not lobby:
-                lobby=next((v for v in cat.voice_channels if is_lobby(v)),None) or await g.create_voice_channel(f"🔊 Lobby {i}",category=cat,user_limit=LOBBY_SIZE)
-            if lobby.user_limit != LOBBY_SIZE:
-                await lobby.edit(user_limit=LOBBY_SIZE,reason="SEOR: синхронизация LOBBY_SIZE")
-            league_role=staff_roles[f"league_{name.lower()}"]
-            for managed_channel in (ranked,lobby):
-                await managed_channel.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-                await managed_channel.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
-                await managed_channel.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
-            for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
-                try: await stale_room.delete(reason="SEOR /setup: удаление пустой комнаты матча")
-                except discord.HTTPException: pass
-            if not ranked.last_message_id:
+        cat_name=league_category_name(name)
+        cat=discord.utils.get(g.categories,name=cat_name) or await g.create_category(cat_name)
+        curator=staff_roles.get(f"curator_{name.lower()}")
+        if curator:
+            await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
+        league_role=staff_roles[f"league_{name.lower()}"]
+        await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+        await cat.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
+        await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+        await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
+        await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
+        lobby_names=tuple(f"Lobby {i}" for i in range(1,LEAGUE_LOBBY_COUNTS[name]+1))
+        await sync_channels(cat,text_names=("ranked",),voice_names=lobby_names,preserve_voice_prefixes=("🛡 CT · #","💣 T · #"))
+        ranked=discord.utils.get(cat.text_channels,name="ranked") or await g.create_text_channel("ranked",category=cat)
+        ranked_was_empty=not ranked.last_message_id
+        await ranked.set_permissions(league_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
+        league_lobbies=[]
+        for lobby_name in lobby_names:
+            lobby=discord.utils.get(cat.voice_channels,name=lobby_name) or await g.create_voice_channel(lobby_name,category=cat,user_limit=LOBBY_SIZE)
+            league_lobbies.append(lobby)
+            if lobby.user_limit!=LOBBY_SIZE:
+                await lobby.edit(user_limit=LOBBY_SIZE,reason="DOMINION: синхронизация LOBBY_SIZE")
+            await lobby.set_permissions(g.default_role,view_channel=False,connect=False)
+            await lobby.set_permissions(registered_role,view_channel=True,connect=False)
+            await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
+        for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
+            try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
+            except discord.HTTPException: pass
+        if ranked_was_empty:
+            for lobby in league_lobbies:
                 msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
-    private=discord.utils.get(g.categories,name="🎧 SEOR PRIVATE") or await g.create_category("🎧 SEOR PRIVATE")
-    await sync_channels(private, text_names=("⚙️・управление-комнатой",), voice_names=("➕ Создать комнату SEOR",), preserve_voice_prefixes=("🏠 Комната ",))
+    private=discord.utils.get(g.categories,name="🎧 DOMINION PRIVATE") or await g.create_category("🎧 DOMINION PRIVATE")
+    await sync_channels(private, text_names=("⚙️・управление-комнатой",), voice_names=("➕ Создать комнату DOMINION",), preserve_voice_prefixes=("🏠 Комната ",))
     panel=discord.utils.get(private.text_channels,name="⚙️・управление-комнатой") or await g.create_text_channel("⚙️・управление-комнатой",category=private)
-    if not discord.utils.get(private.voice_channels,name="➕ Создать комнату SEOR"):
-        await g.create_voice_channel("➕ Создать комнату SEOR",category=private)
+    if not discord.utils.get(private.voice_channels,name="➕ Создать комнату DOMINION"):
+        await g.create_voice_channel("➕ Создать комнату DOMINION",category=private)
     if not panel.last_message_id:
         e=discord.Embed(title="🎧 Управление приватной комнатой",description="Зайди в **➕ Создать комнату** — бот создаст твой голосовой канал и перенесёт тебя. Настраивай его кнопками ниже. Комната удалится, когда опустеет.",color=color())
         await panel.send(embed=e,view=RoomPanel())
 
-    results = await category("📮 SEOR RESULTS")
+    results = await category("📮 DOMINION RESULTS")
     await sync_channels(results, text_names=("📤・отправить-результаты", "📚・история-игр"))
     send_results = await text(results, "📤・отправить-результаты")
     await text(results, "📚・история-игр")
@@ -2590,7 +2738,7 @@ async def setup(interaction:discord.Interaction):
         await community_channels[protected_name].set_permissions(registered_role,view_channel=True,send_messages=False,read_message_history=True)
     await community_channels["🛠️・чат-кураторов"].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
     for league_name,(league_emoji,_) in LEAGUES.items():
-        for league_category in [c for c in g.categories if c.name==f"{league_emoji} SEOR {league_name.upper()}"]:
+        for league_category in [c for c in g.categories if c.name==league_category_name(league_name)]:
             await league_category.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
             for league_channel in league_category.channels:
                 await league_channel.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
@@ -2602,7 +2750,7 @@ async def setup(interaction:discord.Interaction):
         "curator_qualifications", "curator_division", "curator_pro",
     ):
         admin_overwrites[staff_roles[staff_key]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
-    admin = discord.utils.get(g.categories,name="🛡️ SEOR STAFF") or await g.create_category("🛡️ SEOR STAFF",overwrites=admin_overwrites)
+    admin = discord.utils.get(g.categories,name="🛡️ DOMINION STAFF") or await g.create_category("🛡️ DOMINION STAFF",overwrites=admin_overwrites)
     for target,overwrite in admin_overwrites.items(): await admin.set_permissions(target,overwrite=overwrite)
     await ensure_admin_panel_channel_name(g)
     staff_text_names=("💬・штаб-команды","🎛️・панель-админа","🎫・входящие-тикеты","⚠️・центр-санкций","🧾・архив-доказательств","✅・проверка-результатов", "📝・регистрация-игр", "🎛️・управление-матчами", "📋・логи-бота")
@@ -2627,22 +2775,22 @@ async def setup(interaction:discord.Interaction):
     panel.add_field(name="⚖️ Модерация",value="`Санкции` — warn, timeout, kick, ban\n`Роли` — выдача и снятие ролей",inline=True)
     panel.add_field(name="🎮 Матчи",value="`Матчи` — информация и завершение\n`Результаты` — каналы проверки",inline=True)
     panel.add_field(name="📡 Аудит и поддержка",value="`Тикеты` — список открытых\n`Закрыть тикет` • `Аудит`",inline=True)
-    panel.set_footer(text="SEOR CYBER • каждое действие проверяет права")
+    panel.set_footer(text="DOMINION CYBER • каждое действие проверяет права")
     await staff_commands.send(embed=panel,view=StaffControlView())
     if not review.last_message_id:
         await review.send(embed=discord.Embed(title="🧾 Проверка результатов",description="Сюда поступают скриншоты игроков. Администратор проверяет данные и нажимает **Принять** или **Отклонить**.",color=color()))
     if not registration.last_message_id:
         await registration.send(embed=discord.Embed(title="🤖 АВТО-РЕГИСТРАЦИЯ ИГР",description="Бот автоматически считывает со скриншота счёт, карту и K/D/A/MVP. Модератор сверяет распознанные данные с изображением и нажимает **Принять** или **Отклонить**. Куратор может подтверждать только матчи своей лиги.",color=discord.Color.orange()))
 
-    audit=await category("📡 SEOR AUDIT")
+    audit=await category("📡 DOMINION AUDIT")
     for target,overwrite in admin_overwrites.items(): await audit.set_permissions(target,overwrite=overwrite)
     audit_names=("🎫・журнал-тикетов","🆘・журнал-поддержки","🎮・журнал-матчей","📡・общий-журнал")
     await sync_channels(audit,text_names=audit_names)
     audit_channels={name:await text(audit,name,overwrites=admin_overwrites) for name in audit_names}
     if not audit_channels["📡・общий-журнал"].last_message_id:
-        await audit_channels["📡・общий-журнал"].send(embed=discord.Embed(title="📡 SEOR AUDIT STREAM",description="Системные события, действия бота и служебные записи проекта.",color=discord.Color.dark_purple()))
+        await audit_channels["📡・общий-журнал"].send(embed=discord.Embed(title="📡 DOMINION AUDIT STREAM",description="Системные события, действия бота и служебные записи проекта.",color=discord.Color.dark_purple()))
 
-    await send_staff_log(g,"общий-журнал","✅ Структура SEOR синхронизирована",f"Запустил: {interaction.user.mention}\nРоли и закрытые разделы обновлены.",discord.Color.green())
+    await send_staff_log(g,"общий-журнал","✅ Структура DOMINION синхронизирована",f"Запустил: {interaction.user.mention}\nРоли и закрытые разделы обновлены.",discord.Color.green())
     await apply_public_readonly_channels(g)
     await interaction.followup.send("Готово: обновлены только нужные элементы структуры. Существующие категории и каналы не удалялись и не пересоздавались.",ephemeral=True)
 
@@ -2669,7 +2817,7 @@ async def sync_default_league(interaction:discord.Interaction):
     )
 
 
-@bot.tree.command(name="league_role",description="Выдать или снять роль лиги по иерархии SEOR")
+@bot.tree.command(name="league_role",description="Выдать или снять роль лиги по иерархии DOMINION")
 @app_commands.check(command_channel_access)
 @app_commands.describe(member="Участник",league="Роль лиги",action="Выдать или снять")
 @app_commands.choices(
@@ -2697,10 +2845,10 @@ async def league_role_command(interaction:discord.Interaction,member:discord.Mem
         return await interaction.followup.send("Discord блокирует выдачу: владелец сервера должен поднять роль бота выше ролей лиг в настройках ролей.",ephemeral=True)
     try:
         if action.value=="give":
-            await member.add_roles(role,reason=f"SEOR FACEIT /league_role by {interaction.user}")
+            await member.add_roles(role,reason=f"DOMINION FACEIT /league_role by {interaction.user}")
             text=f"{role.mention} выдана участнику {member.mention}."
         else:
-            await member.remove_roles(role,reason=f"SEOR FACEIT /league_role by {interaction.user}")
+            await member.remove_roles(role,reason=f"DOMINION FACEIT /league_role by {interaction.user}")
             text=f"{role.mention} снята с участника {member.mention}."
     except discord.Forbidden:
         return await interaction.followup.send("Discord не разрешил изменить роль. Проверь право бота `Управлять ролями` и поставь роль бота выше ролей лиг.",ephemeral=True)
@@ -2716,6 +2864,30 @@ async def roles_setup(interaction:discord.Interaction):
     await interaction.response.defer(ephemeral=True,thinking=True)
     roles=await ensure_staff_roles(interaction.guild)
     await interaction.followup.send("Роли готовы: "+", ".join(role.mention for role in roles.values()),ephemeral=True)
+
+
+@bot.tree.command(name="delete",description="Полный снос каналов Dominion FACEIT")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(confirm="Введи DOMINION DELETE",scope="channels — только каналы; all — каналы и доступные роли")
+@app_commands.choices(scope=[app_commands.Choice(name="Только каналы",value="channels"),app_commands.Choice(name="Каналы и роли",value="all")])
+async def delete_server(interaction:discord.Interaction,confirm:str,scope:app_commands.Choice[str]):
+    if interaction.user.id!=interaction.guild.owner_id:
+        return await interaction.response.send_message("Команда доступна только владельцу Discord-сервера.",ephemeral=True)
+    if confirm.strip().upper()!="DOMINION DELETE":
+        return await interaction.response.send_message("Отменено. Для подтверждения введи точно `DOMINION DELETE`.",ephemeral=True)
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    deleted_roles=0
+    if scope.value=="all":
+        for role in sorted(interaction.guild.roles,reverse=True):
+            if role.is_default() or role.managed or role>=interaction.guild.me.top_role: continue
+            try: await role.delete(reason=f"Dominion full wipe by {interaction.user}"); deleted_roles+=1
+            except discord.HTTPException: pass
+    await interaction.followup.send(f"Снос запущен. Ролей удалено: **{deleted_roles}**. Сейчас будут удалены все каналы.",ephemeral=True)
+    deleted_channels=0
+    for channel in list(interaction.guild.channels):
+        try: await channel.delete(reason=f"Dominion channel wipe by {interaction.user}"); deleted_channels+=1
+        except discord.HTTPException: pass
+    print(f"{interaction.guild.name}: wipe completed by {interaction.user.id}; channels={deleted_channels}; roles={deleted_roles}",flush=True)
 
 
 @bot.tree.command(name="strip_all_roles",description="Снять роли со всех участников, кроме Owner и Developer")
@@ -2741,7 +2913,7 @@ async def strip_all_roles(interaction:discord.Interaction,confirm:str):
         if not removable:
             continue
         try:
-            await member.remove_roles(*removable,reason=f"SEOR mass role reset by {interaction.user}")
+            await member.remove_roles(*removable,reason=f"DOMINION mass role reset by {interaction.user}")
             changed += 1; removed_count += len(removable)
         except (discord.Forbidden,discord.HTTPException):
             failed += 1
@@ -2792,7 +2964,7 @@ async def restore_launch_roles(interaction:discord.Interaction,confirm:str):
         if not desired:
             continue
         try:
-            await member.add_roles(*desired,reason=f"SEOR launch role restore by {interaction.user}")
+            await member.add_roles(*desired,reason=f"DOMINION launch role restore by {interaction.user}")
             changed_members += 1; added_roles += len(desired)
         except (discord.Forbidden,discord.HTTPException):
             failed.append(username)
@@ -2834,7 +3006,7 @@ async def set_game_id(interaction:discord.Interaction): await interaction.respon
 @app_commands.describe(member="Участник",nickname="Новый ник на сервере")
 async def set_nickname(interaction:discord.Interaction,member:discord.Member,nickname:str):
     if not can_administer(interaction.user):
-        return await interaction.response.send_message("Команда доступна только владельцу и администрации SEOR.",ephemeral=True)
+        return await interaction.response.send_message("Команда доступна только владельцу и администрации DOMINION.",ephemeral=True)
     nickname=nickname.strip()
     if not 2 <= len(nickname) <= 32:
         return await interaction.response.send_message("Ник должен содержать от 2 до 32 символов.",ephemeral=True)
@@ -2842,7 +3014,7 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
         return await interaction.response.send_message("Discord не разрешает боту менять ник владельца сервера.",ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
     try:
-        await member.edit(nick=nickname,reason=f"SEOR /set_nickname by {interaction.user}")
+        await member.edit(nick=nickname,reason=f"DOMINION /set_nickname by {interaction.user}")
     except discord.Forbidden:
         return await interaction.followup.send("Не удалось изменить ник. Подними роль бота выше роли этого участника и выдай право **Manage Nicknames**.",ephemeral=True)
     except discord.HTTPException:
@@ -2933,7 +3105,7 @@ async def command_error(interaction,error):
         if not interaction.channel or not interaction.channel.name.endswith("команды"):
             message="Эту команду можно использовать только в канале #команды."
         else:
-            message="Команды временно доступны только владельцу и участникам со служебными ролями SEOR."
+            message="Команды временно доступны только владельцу и участникам со служебными ролями DOMINION."
     else:
         print(f"Application command error: {error!r}",flush=True)
         message="При выполнении команды произошла ошибка. Проверь логи Railway."

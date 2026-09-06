@@ -1,6 +1,6 @@
-"""FACEIT-style CS2 Elo level thresholds adapted for SEOR.
+"""FACEIT-style CS2 Elo level thresholds adapted for DOMINION.
 
-SEOR uses 0 as the minimum Elo and starts Level 10 at exactly 2000 Elo.
+DOMINION uses 0 as the minimum Elo and starts Level 10 at exactly 2000 Elo.
 """
 
 ELO_LEVELS = (

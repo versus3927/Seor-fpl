@@ -88,9 +88,9 @@ def set_nickname(guild_id:int,user_id:int,nickname:str):
         con.execute("UPDATE players SET nickname=? WHERE guild_id=? AND user_id=?",(nickname.strip(),guild_id,user_id))
 
 def restore_registration(guild_id:int,user_id:int,nickname:str,game_id:str):
-    """Restore an existing SEOR profile by nickname + Standoff 2 ID.
+    """Restore an existing DOMINION profile by nickname + Standoff 2 ID.
 
-    The current guild is preferred, but a profile from an older SEOR guild can
+    The current guild is preferred, but a profile from an older DOMINION guild can
     also be imported. Inside the same guild the profile is moved to the current
     Discord account so it cannot be used twice.
     """

@@ -18,7 +18,7 @@ def font(size,bold=False):
  return ImageFont.truetype(str(path),size)
 
 
-def build_matches_card(matches,title='ПОСЛЕДНИЕ МАТЧИ',subtitle='История игр SEOR FACEIT'):
+def build_matches_card(matches,title='ПОСЛЕДНИЕ МАТЧИ',subtitle='История игр DOMINION FACEIT'):
  """matches: list of dicts with id, league, map, score_a, score_b, status."""
  rows=list(matches)[:10]
  height=270+max(1,len(rows))*104+90
@@ -36,7 +36,7 @@ def build_matches_card(matches,title='ПОСЛЕДНИЕ МАТЧИ',subtitle='�
   d.polygon([(x,0),(x+72,0),(x-86,232),(x-142,232)],fill=(*primary,26))
  # Header
  d.rounded_rectangle((30,28,1050,206),radius=30,fill=(14,16,28,235),outline=(*primary,190),width=3)
- d.text((64,60),'SEOR FACEIT',font=font(21,True),fill=(*primary,255))
+ d.text((64,60),'DOMINION FACEIT',font=font(21,True),fill=(*primary,255))
  d.text((64,95),title,font=font(41,True),fill=(246,247,252,255))
  d.text((64,153),subtitle,font=font(19),fill=(169,172,190,255))
  # 3D controller-like badge
@@ -66,5 +66,5 @@ def build_matches_card(matches,title='ПОСЛЕДНИЕ МАТЧИ',subtitle='�
   d.text((731,y+43),score,font=font(27,True),anchor='mm',fill=(255,255,255,255))
   d.rounded_rectangle((848,y+24,1014,y+62),radius=13,fill=(24,26,40,255),outline=(*status_color,225),width=2)
   d.text((931,y+44),status_text,font=font(17,True),anchor='mm',fill=(*status_color,255))
- d.text((540,height-44),'SEOR CYBER • FACEIT STANDOFF 2',font=font(17,True),anchor='mm',fill=(*primary,205))
+ d.text((540,height-44),'DOMINION CYBER • FACEIT STANDOFF 2',font=font(17,True),anchor='mm',fill=(*primary,205))
  out=io.BytesIO(); canvas.convert('RGB').save(out,'PNG',quality=95); out.seek(0); return out

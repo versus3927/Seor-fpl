@@ -100,7 +100,7 @@ def draw_level_badge(draw,cx,cy,level,accent):
     for radius,color,alpha,width in [(82,PURPLE,55,2),(69,accent,225,3),(56,(8,7,18),255,2)]:
         pts=[(cx+radius*math.cos(math.radians(60*i-30)),cy+radius*math.sin(math.radians(60*i-30))) for i in range(6)]
         draw.polygon(pts,fill=(*color,alpha),outline=(*CYAN,180),width=width)
-    text(draw,(cx,cy-8),level,50,WHITE,True,'mm'); text(draw,(cx,cy+36),'LEVEL',14,MUTED,True,'mm')
+    text(draw,(cx,cy),level,54,WHITE,True,'mm')
 
 
 def draw_donut(draw,center,radius,ratio,primary,secondary,label,value):
@@ -112,7 +112,7 @@ def draw_donut(draw,center,radius,ratio,primary,secondary,label,value):
 
 
 def build_profile_card_sync(player,display_name,avatar_url,recent):
-    points=max(0,int(player.get('points',0))); level=elo_level(points); league=league_for(points); accent=LEAGUE_COLORS[league]
+    points=max(0,int(player.get('points',0))); level=elo_level(points); league=league_for(points); league_color=LEAGUE_COLORS[league]; accent=PURPLE
     games=int(player.get('games',0)); wins=int(player.get('wins',0)); losses=int(player.get('losses',max(0,games-wins)))
     kills=int(player.get('kills',0)); deaths=int(player.get('deaths',0)); assists=int(player.get('assists',0)); mvp=int(player.get('mvp',0))
     kd=kills/max(1,deaths); winrate=wins/max(1,games)*100; avg=kills/max(1,games)
@@ -129,17 +129,17 @@ def build_profile_card_sync(player,display_name,avatar_url,recent):
     # Header / identity.
     panel(draw,(44,40,1756,306),34,fill=(9,8,20),outline=PURPLE,width=3)
     draw_brand_mark(draw,76,84,72)
-    text(draw,(178,80),'DOMINION FACEIT',31,WHITE,True)
-    text(draw,(178,121),'PLAYER NETWORK',15,VIOLET,True)
+    text(draw,(178,80),'DOMINION',31,WHITE,True)
+    text(draw,(178,121),'FACEIT PLAYER NETWORK',14,VIOLET,True)
     avatar=fetch_avatar(avatar_url,210); paste_round(canvas,avatar,(390,68,600,278),35)
-    draw.rounded_rectangle((384,62,606,284),radius=41,outline=(*accent,255),width=5)
+    draw.rounded_rectangle((384,62,606,284),radius=41,outline=(*PURPLE,255),width=5)
     text(draw,(640,83),'PLAYER PROFILE',17,VIOLET,True)
     text(draw,(640,120),display_name[:23],48,WHITE,True)
     text(draw,(640,182),f"ID  {player.get('game_id') or 'NOT LINKED'}",20,MUTED,True)
-    draw.rounded_rectangle((640,225,910,267),radius=18,fill=(*accent,38),outline=(*accent,190),width=2)
-    text(draw,(775,246),f'{league.upper()} LEAGUE',17,accent,True,'mm')
+    draw.rounded_rectangle((640,225,910,267),radius=18,fill=(25,21,42,255),outline=(*league_color,220),width=2)
+    text(draw,(775,246),f'{league.upper()} LEAGUE',17,league_color,True,'mm')
     draw_level_badge(draw,1495,172,level,accent)
-    text(draw,(1390,88),f'{points} ELO',28,WHITE,True)
+    text(draw,(1380,88),f'{points} ELO',25,WHITE,True,'ra')
     text(draw,(1710,267),'PLAYER '+str(player['user_id'])[-6:],14,MUTED,True,'ra')
 
     # Main statistics area.
@@ -157,17 +157,17 @@ def build_profile_card_sync(player,display_name,avatar_url,recent):
 
     # Elo and league sidebar.
     panel(draw,(1220,340,1756,640),30,fill=PANEL,outline=accent)
-    text(draw,(1258,379),'RANK PROGRESS',22,WHITE,True)
+    text(draw,(1258,379),'ELO PROGRESS',22,WHITE,True)
     lvl,floor,next_floor,ratio=elo_bounds(points)
-    text(draw,(1258,430),f'LEVEL {lvl}',30,accent,True); text(draw,(1715,432),f'{points} ELO',25,WHITE,True,'ra')
+    text(draw,(1258,430),f'{lvl}',34,accent,True); text(draw,(1715,432),f'{points} ELO',25,WHITE,True,'ra')
     line_progress(draw,(1258,496,1715,516),ratio,accent)
     text(draw,(1258,532),f'{floor} ELO',14,MUTED,True)
     text(draw,(1715,532),('MAX' if next_floor is None else f'{next_floor} ELO'),14,MUTED,True,'ra')
-    remaining='MAXIMUM LEVEL' if next_floor is None else f'{next_floor-points} ELO TO LEVEL {lvl+1}'
+    remaining='MAXIMUM ELO' if next_floor is None else f'{next_floor-points} ELO TO {lvl+1}'
     text(draw,(1258,579),remaining,17,CYAN,True)
 
     panel(draw,(1220,672,1756,812),26,fill=(10,9,21),outline=(55,44,82))
-    text(draw,(1258,706),'LEAGUE',14,MUTED,True); text(draw,(1258,738),league,31,accent,True)
+    text(draw,(1258,706),'LEAGUE',14,MUTED,True); text(draw,(1258,738),league,31,league_color,True)
     text(draw,(1715,715),'RECORD',14,MUTED,True,'ra'); text(draw,(1715,748),f'{wins}W  {losses}L',24,WHITE,True,'ra')
 
     # Map performance.

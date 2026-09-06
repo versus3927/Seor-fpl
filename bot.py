@@ -548,7 +548,7 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
         try:
             await interaction.user.add_roles(roles["league_default"],reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
-            return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
+            return await interaction.followup.send("Профил�� восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
         db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
         await interaction.followup.send(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
 
@@ -2178,10 +2178,10 @@ async def apply_league_channel_privacy(guild):
 
     # Чаты лиг вне категорий лиг также доступны только соответствующей лиге.
     chat_map={
-        "чат-pro":"pro",
-        "чат-division":"division",
-        "чат-qualifications":"qualifications",
-        "чат-default":"default",
+        "чат-pro-league":"pro",
+        "чат-dominion-ascend":"division",
+        "чат-dominion-rise":"qualifications",
+        "чат-default-league":"default",
     }
     for channel in guild.text_channels:
         normalized=normalized_role_name(channel.name).replace("・","-")
@@ -2193,7 +2193,7 @@ async def apply_league_channel_privacy(guild):
             continue
         changed+=await apply_overwrite_if_changed(channel,guild.default_role,view_channel=False,send_messages=False,read_message_history=False)
         if registered:
-            changed+=await apply_overwrite_if_changed(channel,registered,view_channel=True,send_messages=False,read_message_history=True)
+            changed+=await apply_overwrite_if_changed(channel,registered,view_channel=False,send_messages=False,read_message_history=False)
         changed+=await apply_overwrite_if_changed(channel,league_role,view_channel=True,send_messages=True,read_message_history=True)
         curator_name=STAFF_ROLES.get(f"curator_{league_key}")
         curator=find_role(guild,curator_name) if curator_name else None
@@ -2280,6 +2280,44 @@ async def ensure_admin_panel_channel_name(guild):
     return old_channel
 
 
+async def ensure_dominion_league_chats(guild):
+    community=discord.utils.get(guild.categories,name="💬 DOMINION COMMUNITY")
+    if not community:
+        return 0
+    roles=await ensure_staff_roles(guild)
+    registered=find_role(guild,REGISTERED_ROLE_NAME)
+    specs={
+        "🔴・чат-pro-league":(("🔴・чат-pro",),"league_pro","curator_pro"),
+        "🟣・чат-dominion-ascend":(("🟣・чат-division",),"league_division","curator_division"),
+        "🟢・чат-dominion-rise":(("🟡・чат-qualifications","🟢・чат-qualifications"),"league_qualifications","curator_qualifications"),
+        "⚪・чат-default-league":(("⚪・чат-default",),"league_default",None),
+    }
+    changed=0
+    for new_name,(old_names,league_key,curator_key) in specs.items():
+        channel=discord.utils.get(community.text_channels,name=new_name)
+        if not channel:
+            old_channel=next((discord.utils.get(community.text_channels,name=name) for name in old_names if discord.utils.get(community.text_channels,name=name)),None)
+            if old_channel:
+                try: await old_channel.edit(name=new_name,reason="Dominion league chat rebrand"); channel=old_channel; changed+=1
+                except discord.HTTPException: channel=old_channel
+            else:
+                channel=await guild.create_text_channel(new_name,category=community,reason="Dominion league chat")
+                changed+=1
+        await channel.set_permissions(guild.default_role,view_channel=False,send_messages=False,read_message_history=False)
+        if registered:
+            await channel.set_permissions(registered,view_channel=False,send_messages=False,read_message_history=False)
+        league_role=roles.get(league_key)
+        if league_role:
+            await channel.set_permissions(league_role,view_channel=True,send_messages=True,read_message_history=True)
+        curator=roles.get(curator_key) if curator_key else None
+        if curator:
+            await channel.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
+        for key in ("owner","admin","developer","director","head_admin"):
+            role=roles.get(key)
+            if role: await channel.set_permissions(role,view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
+    return changed
+
+
 async def migrate_dominion_branding(guild):
     general={
         "▶️ SEOR START":"▶️ DOMINION START","📡 SEOR INFO":"📡 DOMINION INFO","🏠 SEOR COMMUNITY":"🏠 DOMINION COMMUNITY",
@@ -2316,6 +2354,7 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
     for guild in bot.guilds:
         await migrate_dominion_branding(guild)
+        await ensure_dominion_league_chats(guild)
         await ensure_staff_application_system(guild)
         warn_roles_created=await ensure_special_warn_roles(guild)
         if warn_roles_created:
@@ -2647,19 +2686,22 @@ async def setup(interaction:discord.Interaction):
     await dashboard.send(embed=e, view=DashboardView())
 
     community = await category("💬 DOMINION COMMUNITY")
-    community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro", "🟣・чат-division", "🟡・чат-qualifications", "🛠️・чат-кураторов")
+    community_names=("💭・общий-чат", "🛡️・поиск-клана", "🎯・поиск-игроков", "🔴・чат-pro-league", "🟣・чат-dominion-ascend", "🟢・чат-dominion-rise", "⚪・чат-default-league", "🛠️・чат-кураторов")
     await sync_channels(community, text_names=community_names, voice_names=("🌐 Общий голос",))
     community_channels={channel_name:await text(community,channel_name) for channel_name in community_names}
     protected_chats={
-        "🔴・чат-pro":("league_pro","curator_pro"),
-        "🟣・чат-division":("league_division","curator_division"),
-        "🟡・чат-qualifications":("league_qualifications","curator_qualifications"),
+        "🔴・чат-pro-league":("league_pro","curator_pro"),
+        "🟣・чат-dominion-ascend":("league_division","curator_division"),
+        "🟢・чат-dominion-rise":("league_qualifications","curator_qualifications"),
+        "⚪・чат-default-league":("league_default",None),
     }
     for channel_name,(league_key,curator_key) in protected_chats.items():
         channel=community_channels[channel_name]
         await channel.set_permissions(g.default_role,view_channel=False,send_messages=False,read_message_history=False)
+        await channel.set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
         await channel.set_permissions(staff_roles[league_key],view_channel=True,send_messages=True,read_message_history=True)
-        await channel.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
+        if curator_key and staff_roles.get(curator_key):
+            await channel.set_permissions(staff_roles[curator_key],view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
         await channel.set_permissions(staff_roles["owner"],view_channel=True,send_messages=True,manage_messages=True)
         await channel.set_permissions(staff_roles["admin"],view_channel=True,send_messages=True,manage_messages=True)
     curator_chat=community_channels["🛠️��чат-кураторов"]
@@ -2735,7 +2777,7 @@ async def setup(interaction:discord.Interaction):
     for public_category in (start,community,support,private,results):
         await gate_registered(public_category)
     for protected_name in protected_chats:
-        await community_channels[protected_name].set_permissions(registered_role,view_channel=True,send_messages=False,read_message_history=True)
+        await community_channels[protected_name].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
     await community_channels["🛠️・чат-кураторов"].set_permissions(registered_role,view_channel=False,send_messages=False,read_message_history=False)
     for league_name,(league_emoji,_) in LEAGUES.items():
         for league_category in [c for c in g.categories if c.name==league_category_name(league_name)]:

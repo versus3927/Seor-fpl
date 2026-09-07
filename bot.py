@@ -600,7 +600,7 @@ def match_ocr_players(guild,match,analysis):
 
 def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
-    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н�� распознан"
+    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н���� распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
@@ -910,7 +910,7 @@ class StaffRoleSelect(discord.ui.Select):
         self.placeholder=f"Роль: {selected}"[:150]
         member=interaction.guild.get_member(self.view.target_id) if self.view.target_id else None
         who=member.mention if member else "сначала выбери участника"
-        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник: {who}\nРоль: **{selected}**\nНажми **Выдать** или **Снять**.",color=color())
+        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник: {who}\n��оль: **{selected}**\nНажми **Выдать** или **Снять**.",color=color())
         await interaction.response.edit_message(embed=embed,view=self.view)
 
 
@@ -1522,7 +1522,7 @@ class StaffApplicationModal(discord.ui.Modal):
     age=discord.ui.TextInput(label="Возраст",placeholder="Например: 16",max_length=3)
     experience=discord.ui.TextInput(label="Опыт",style=discord.TextStyle.paragraph,placeholder="Опиши опыт модерации или поддержки",max_length=700)
     motivation=discord.ui.TextInput(label="Почему именно ты?",style=discord.TextStyle.paragraph,max_length=700)
-    online=discord.ui.TextInput(label="Онлайн в день",placeholder="Например: 4–6 часов",max_length=80)
+    online=discord.ui.TextInput(label="Онлайн в де��ь",placeholder="Например: 4–6 часов",max_length=80)
     def __init__(self,application_type):
         title=STAFF_APPLICATION_TYPES[application_type][0]
         super().__init__(title=f"Заявка: {title}"); self.application_type=application_type
@@ -2782,7 +2782,7 @@ async def setup(interaction:discord.Interaction):
             except discord.Forbidden: pass
 
     # /setup синхронизирует только структуру, которой управляет бот.
-    # Посторонние пользовательские категории и каналы не затрагиваются.
+    # Посторонн��е пользовательские категории и каналы не затрагиваются.
     # Инкрементальный setup: существующие категории и каналы не удаляются.
     # Создаются только отсутствующие элементы, а права обновляются на нужных элементах.
 
@@ -2968,20 +2968,20 @@ async def setup(interaction:discord.Interaction):
                 queue_message=await ranked.send(embed=queue_embed(lobby),view=QueueView())
             queue_messages[lobby.id]=queue_message.id
 
-        # Сначала размещаем все ranked-каналы, затем все Lobby.
+        # Каждый ranked-N размещается непосредственно над соответствующим Lobby N.
+        # Названия каналов при этом не изменяются.
         if league_pairs:
             base_position=min(item.position for item in cat.channels)
-            for offset,(ranked,_) in enumerate(league_pairs):
-                try:
-                    await ranked.edit(position=base_position+offset,reason="DOMINION: ranked над лобби")
-                except discord.HTTPException:
-                    pass
-            lobby_start=base_position+len(league_pairs)
-            for offset,(_,lobby) in enumerate(league_pairs):
-                try:
-                    await lobby.edit(position=lobby_start+offset,reason="DOMINION: лобби под ranked")
-                except discord.HTTPException:
-                    pass
+            ordered_channels=[]
+            for ranked,lobby in league_pairs:
+                ordered_channels.extend((ranked,lobby))
+            try:
+                await g.edit_channel_positions(
+                    positions={channel:base_position+offset for offset,channel in enumerate(ordered_channels)},
+                    reason="DOMINION: каждый ranked над своим Lobby",
+                )
+            except discord.HTTPException:
+                pass
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
             except discord.HTTPException: pass
@@ -3134,7 +3134,7 @@ async def league_role_command(interaction:discord.Interaction,member:discord.Mem
     await interaction.followup.send(text,ephemeral=True)
 
 
-@bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
+@bot.tree.command(name="roles_setup",description="Создать или восстановить служе��ные роли")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 async def roles_setup(interaction:discord.Interaction):

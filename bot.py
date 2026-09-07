@@ -1522,26 +1522,43 @@ class StaffApplicationModal(discord.ui.Modal):
     age=discord.ui.TextInput(label="Возраст",placeholder="Например: 16",max_length=3)
     experience=discord.ui.TextInput(label="Опыт",style=discord.TextStyle.paragraph,placeholder="Опиши опыт модерации или поддержки",max_length=700)
     motivation=discord.ui.TextInput(label="Почему именно ты?",style=discord.TextStyle.paragraph,max_length=700)
-    online=discord.ui.TextInput(label="Онлай�� в де��ь",placeholder="Например: 4–6 часов",max_length=80)
+    online=discord.ui.TextInput(label="Онлайн в день",placeholder="Например: 4–6 часов",max_length=80)
     def __init__(self,application_type):
         title=STAFF_APPLICATION_TYPES[application_type][0]
         super().__init__(title=f"Заявка: {title}"); self.application_type=application_type
     async def on_submit(self,interaction):
-        await interaction.response.defer(ephemeral=True,thinking=True)
-        title,role_key,channel_name=STAFF_APPLICATION_TYPES[self.application_type]
-        channel=discord.utils.get(interaction.guild.text_channels,name=channel_name)
-        if not channel:
-            return await interaction.followup.send("Канал заявок не найден. Администратору нужно выполнить `/setup`.",ephemeral=True)
-        embed=discord.Embed(title=f"📨 Заявка на {title}",description=f"Кандидат: {interaction.user.mention} (`{interaction.user.id}`)",color=discord.Color.purple(),timestamp=datetime.now(timezone.utc))
-        embed.add_field(name="Возраст",value=str(self.age)[:1024],inline=True)
-        embed.add_field(name="Онлайн",value=str(self.online)[:1024],inline=True)
-        embed.add_field(name="Опыт",value=str(self.experience)[:1024],inline=False)
-        embed.add_field(name="Мотивация",value=str(self.motivation)[:1024],inline=False)
-        view=discord.ui.View(timeout=None)
-        view.add_item(discord.ui.Button(label="Принять",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"staffapp:accept:{self.application_type}:{interaction.user.id}"))
-        view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"staffapp:reject:{self.application_type}:{interaction.user.id}"))
-        await channel.send(embed=embed,view=view)
-        await interaction.followup.send(f"✅ Заявка на **{title}** отправлена.",ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True,thinking=True)
+            title,role_key,channel_name=STAFF_APPLICATION_TYPES[self.application_type]
+            channel=discord.utils.get(interaction.guild.text_channels,name=channel_name)
+            if not channel:
+                return await interaction.followup.send("Канал заявок не найден. Администратору нужно выполнить `/setup`.",ephemeral=True)
+            permissions=channel.permissions_for(interaction.guild.me)
+            if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+                return await interaction.followup.send(
+                    f"Бот не может отправить заявку в {channel.mention}. Выдай ему права `Просмотр канала`, `Отправка сообщений` и `Встраивание ссылок`.",
+                    ephemeral=True,
+                )
+            embed=discord.Embed(title=f"📨 Заявка на {title}",description=f"Кандидат: {interaction.user.mention} (`{interaction.user.id}`)",color=discord.Color.purple(),timestamp=datetime.now(timezone.utc))
+            embed.add_field(name="Возраст",value=self.age.value[:1024],inline=True)
+            embed.add_field(name="Онлайн",value=self.online.value[:1024],inline=True)
+            embed.add_field(name="Опыт",value=self.experience.value[:1024],inline=False)
+            embed.add_field(name="Мотивация",value=self.motivation.value[:1024],inline=False)
+            view=discord.ui.View(timeout=None)
+            view.add_item(discord.ui.Button(label="Принять",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"staffapp:accept:{self.application_type}:{interaction.user.id}"))
+            view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"staffapp:reject:{self.application_type}:{interaction.user.id}"))
+            await channel.send(embed=embed,view=view)
+            await interaction.followup.send(f"✅ Заявка на **{title}** отправлена.",ephemeral=True)
+        except Exception as exc:
+            print(f"Staff application submit error: {type(exc).__name__}: {exc!r}",flush=True)
+            message=f"Не удалось отправить заявку: `{type(exc).__name__}`. Проверь права бота в канале заявок."
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(message,ephemeral=True)
+                else:
+                    await interaction.response.send_message(message,ephemeral=True)
+            except discord.HTTPException:
+                pass
 
 
 class StaffApplicationPanelView(discord.ui.View):
@@ -2922,28 +2939,66 @@ async def setup(interaction:discord.Interaction):
 
     for name,(emoji,_) in LEAGUES.items():
         cat_name=league_category_name(name)
-        cat=discord.utils.get(g.categories,name=cat_name) or await g.create_category(cat_name)
+        pair_count=LEAGUE_LOBBY_COUNTS[name]
+        league_categories=sorted(
+            [category for category in g.categories if category.name==cat_name],
+            key=lambda category: category.position,
+        )
+        if not league_categories:
+            league_categories.append(await g.create_category(cat_name))
+        template_category=league_categories[0]
+
+        # Discord всегда группирует текстовые каналы выше голосовых внутри одной
+        # категории. Поэтому для вида ranked-1/Lobby 1, ranked-2/Lobby 2 создаём
+        # отдельную категорию с тем же названием для каждой пары.
+        while len(league_categories)<pair_count:
+            new_category=await g.create_category(
+                cat_name,
+                overwrites=template_category.overwrites,
+                position=template_category.position+len(league_categories),
+                reason="DOMINION: отдельная категория для пары ranked/Lobby",
+            )
+            league_categories.append(new_category)
+
         curator=staff_roles.get(f"curator_{name.lower()}")
-        if curator:
-            await cat.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
         league_role=staff_roles[f"league_{name.lower()}"]
-        await cat.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
-        await cat.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
-        await cat.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
-        await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
-        await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
-        lobby_names=tuple(f"Lobby {i}" for i in range(1,LEAGUE_LOBBY_COUNTS[name]+1))
-        ranked_names=tuple(ranked_channel_name(i) for i in range(1,LEAGUE_LOBBY_COUNTS[name]+1))
-        legacy_ranked=discord.utils.get(cat.text_channels,name="ranked")
-        if legacy_ranked and not discord.utils.get(cat.text_channels,name=ranked_names[0]):
+        for pair_category in league_categories[:pair_count]:
+            if curator:
+                await pair_category.set_permissions(curator,view_channel=True,send_messages=True,manage_messages=True,manage_channels=True,connect=True,move_members=True,mute_members=True)
+            await pair_category.set_permissions(g.default_role,view_channel=False,connect=False,send_messages=False,use_application_commands=False)
+            await pair_category.set_permissions(registered_role,view_channel=True,connect=False,send_messages=False,read_message_history=True,use_application_commands=False)
+            await pair_category.set_permissions(league_role,view_channel=True,connect=True,speak=True,send_messages=True,read_message_history=True,use_application_commands=True)
+            await pair_category.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
+            await pair_category.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
+
+        def all_league_text_channels():
+            return [channel for category in league_categories for channel in category.text_channels]
+
+        def all_league_voice_channels():
+            return [channel for category in league_categories for channel in category.voice_channels]
+
+        lobby_names=tuple(f"Lobby {i}" for i in range(1,pair_count+1))
+        ranked_names=tuple(ranked_channel_name(i) for i in range(1,pair_count+1))
+        legacy_ranked=next((channel for channel in all_league_text_channels() if channel.name=="ranked"),None)
+        if legacy_ranked and not any(channel.name==ranked_names[0] for channel in all_league_text_channels()):
             await legacy_ranked.edit(name=ranked_names[0],reason="DOMINION: отдельный ranked для Lobby 1")
-        await sync_channels(cat,text_names=ranked_names,voice_names=lobby_names,preserve_voice_prefixes=("🛡 CT · #","💣 T · #"))
-        league_pairs=[]
+
         for index,lobby_name in enumerate(lobby_names,1):
+            pair_category=league_categories[index-1]
             ranked_name=ranked_channel_name(index)
-            ranked=discord.utils.get(cat.text_channels,name=ranked_name) or await g.create_text_channel(ranked_name,category=cat)
-            lobby=discord.utils.get(cat.voice_channels,name=lobby_name) or await g.create_voice_channel(lobby_name,category=cat,user_limit=LOBBY_SIZE)
-            league_pairs.append((ranked,lobby))
+            ranked=(discord.utils.get(pair_category.text_channels,name=ranked_name)
+                    or next((channel for channel in all_league_text_channels() if channel.name==ranked_name),None)
+                    or await g.create_text_channel(ranked_name,category=pair_category))
+            lobby=(discord.utils.get(pair_category.voice_channels,name=lobby_name)
+                   or next((channel for channel in all_league_voice_channels() if channel.name==lobby_name),None)
+                   or await g.create_voice_channel(lobby_name,category=pair_category,user_limit=LOBBY_SIZE))
+
+            # Переносим существующие каналы без удаления и без переименования.
+            if ranked.category!=pair_category:
+                await ranked.edit(category=pair_category,reason="DOMINION: ranked и Lobby в одной категории")
+            if lobby.category!=pair_category:
+                await lobby.edit(category=pair_category,reason="DOMINION: ranked и Lobby в одной категории")
+
             await ranked.set_permissions(league_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=True)
             if lobby.user_limit!=LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="DOMINION: синхронизация LOBBY_SIZE")
@@ -2951,7 +3006,7 @@ async def setup(interaction:discord.Interaction):
             await lobby.set_permissions(registered_role,view_channel=True,connect=False)
             await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
 
-            # Keep exactly one queue panel in the ranked channel paired with this lobby.
+            # Сохраняем существующую очередь и удаляем только лишние панели самого бота.
             queue_message=None
             async for message in ranked.history(limit=50):
                 is_queue_panel=(message.author==g.me and message.embeds and message.embeds[0].title.startswith("⚔️ "))
@@ -2968,26 +3023,10 @@ async def setup(interaction:discord.Interaction):
                 queue_message=await ranked.send(embed=queue_embed(lobby),view=QueueView())
             queue_messages[lobby.id]=queue_message.id
 
-        # Каждый ranked-N размещается непосредственно над соответствующим Lobby N.
-        # Названия каналов при этом не изменяются.
-        if league_pairs:
-            base_position=min(item.position for item in cat.channels)
-            ordered_channels=[]
-            for ranked,lobby in league_pairs:
-                ordered_channels.extend((ranked,lobby))
-            # discord.py перемещает каналы через channel.move().
-            # Идём с конца и каждый канал ставим в начало категории —
-            # в результате сохраняется порядок ranked-1, Lobby 1, ranked-2, Lobby 2...
-            for channel in reversed(ordered_channels):
-                try:
-                    await channel.move(
-                        beginning=True,
-                        category=cat,
-                        reason="DOMINION: каждый ranked над своим Lobby",
-                    )
-                except discord.HTTPException:
-                    pass
-        for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
+        for stale_room in [
+            voice for category in league_categories for voice in category.voice_channels
+            if voice.name.startswith(("🛡 CT · #","💣 T · #")) and not voice.members
+        ]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
             except discord.HTTPException: pass
     private=discord.utils.get(g.categories,name="🎧 DOMINION PRIVATE") or await g.create_category("🎧 DOMINION PRIVATE")

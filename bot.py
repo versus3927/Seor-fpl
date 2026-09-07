@@ -44,7 +44,7 @@ LEAGUE_CATEGORY_NAMES={
     "Division":"🟣・DOMINION ASCEND",
     "Pro":"🔴・PRO LEAGUE",
 }
-LEAGUE_LOBBY_COUNTS={"Default":3,"Qualifications":3,"Division":2,"Pro":2}
+LEAGUE_LOBBY_COUNTS={"Default":3,"Qualifications":3,"Division":3,"Pro":3}
 LEAGUE_DISPLAY_NAMES={
     "Default":"Default League",
     "Qualifications":"Dominion Rise",
@@ -142,6 +142,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 queue_messages = {}
 starting = set()
 active_veto = set()
+active_veto_players = {}
 room_owners = {}
 match_room_cleanup = {}
 
@@ -600,7 +601,7 @@ def match_ocr_players(guild,match,analysis):
 
 def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
-    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н������ распознан"
+    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н�������� распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
@@ -1483,7 +1484,7 @@ class StaffControlView(discord.ui.View):
     @discord.ui.button(label="Роли",emoji="🛡️",style=discord.ButtonStyle.primary,custom_id="staff:roles",row=0)
     async def roles(self,i,b):
         if await self.allowed(i): await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и доступную роль.",color=color()),view=RolePanelView(i.user),ephemeral=True)
-    @discord.ui.button(label="Матчи",emoji="🎮",style=discord.ButtonStyle.primary,custom_id="staff:matches",row=0)
+    @discord.ui.button(label="Матчи",emoji="����",style=discord.ButtonStyle.primary,custom_id="staff:matches",row=0)
     async def matches(self,i,b):
         if await self.allowed(i): await i.response.send_modal(MatchAdminModal())
     @discord.ui.button(label="Результаты",emoji="✅",style=discord.ButtonStyle.success,custom_id="staff:results",row=0)
@@ -1807,7 +1808,7 @@ async def ensure_ticket_inbox(guild):
         if role:
             overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
     channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="DOMINION FACEIT: входящие тикеты")
-    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смогут только профильные сотрудники и старшее руководство.",color=color())
+    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смо��ут только профильные сотрудники и старшее руководство.",color=color())
     await channel.send(embed=intro)
     return channel
 
@@ -2011,19 +2012,20 @@ async def send_profile(interaction,member=None):
 
 
 async def update_queue(channel):
+    """Не показывает очередь; при полном Lobby сразу запускает матч."""
     if not is_lobby(channel) or not league_of(channel): return
     text=ranked_channel_for_lobby(channel)
     if not text: return
     key=channel.id
-    msg=None
-    if key in queue_messages:
-        try: msg=await text.fetch_message(queue_messages[key])
-        except discord.HTTPException: pass
-    if not msg:
-        msg=await text.send(embed=queue_embed(channel),view=QueueView())
-        queue_messages[key]=msg.id
-    else:
-        await msg.edit(embed=queue_embed(channel),view=QueueView())
+
+    old_message_id=queue_messages.pop(key,None)
+    if old_message_id:
+        try:
+            old_message=await text.fetch_message(old_message_id)
+            await old_message.delete()
+        except discord.HTTPException:
+            pass
+
     if len(live_members(channel)) >= LOBBY_SIZE and key not in starting and key not in active_veto:
         starting.add(key)
         try: await start_match(channel,text)
@@ -2052,13 +2054,27 @@ class MapVetoView(discord.ui.View):
         else:
             available="  ".join(f"{MAP_ICONS[m]} **{m}**" for m in self.remaining)
             log="\n".join(self.history[-6:]) or "Банов пока нет."
-            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас банит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
-            e.add_field(name="🛡 Капитан CT",value=self.captains[0].mention,inline=True)
-            e.add_field(name="💣 Капитан T",value=self.captains[1].mention,inline=True)
-            e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=True)
+            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Команды сформированы. Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас банит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
+
+        def team_with_elo(team):
+            lines=[]
+            for member in team:
+                if member.bot:
+                    lines.append(f"• {member.mention}")
+                    continue
+                player=db.player(self.lobby.guild.id,member.id)
+                elo=int(player.get("points",STARTING_ELO) or STARTING_ELO)
+                lines.append(f"• {member.mention} — **{elo} ELO**")
+            return "\n".join(lines) or "—"
+
+        e.add_field(name="🛡 CT",value=team_with_elo(self.team_a),inline=True)
+        e.add_field(name="💣 T",value=team_with_elo(self.team_b),inline=True)
+        if not selected:
+            e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=False)
             e.add_field(name="История банов",value=log,inline=False)
         e.set_footer(text=f"DOMINION MAP VETO • {league_display_name(self.league)} • осталось карт: {len(self.remaining)}")
         return e
+
 
     def rebuild(self):
         self.clear_items()
@@ -2113,6 +2129,7 @@ class MapVetoView(discord.ui.View):
             self.clear_items()
             await self.message.edit(embed=self.embed(selected),view=self)
             active_veto.discard(self.lobby.id)
+            active_veto_players.pop(self.lobby.id,None)
             await finalize_match(self.lobby,self.text,self.members,self.team_a,self.team_b,self.league,self.host,selected)
             return
         self.turn+=1
@@ -2133,10 +2150,12 @@ async def start_match(lobby,text):
     league=league_of(lobby) or "Default"
     host=random.choice(members)
     active_veto.add(lobby.id)
+    active_veto_players[lobby.id]={member.id for member in members if not member.bot}
     veto=MapVetoView(lobby,text,members,a,b,league,host)
     try: await veto.start()
     except Exception:
         active_veto.discard(lobby.id)
+        active_veto_players.pop(lobby.id,None)
         raise
 
 
@@ -2679,7 +2698,30 @@ async def delete_empty_match_room(channel):
 @bot.event
 async def on_voice_state_update(member,before,after):
     if member.bot: return
-    if after.channel and after.channel.name.startswith("➕ Создать комнату"):
+
+    # Выход или переход в другой голосовой канал во время пиков карт — timeout на 10 минут.
+    if (before.channel and before.channel.id in active_veto
+            and member.id in active_veto_players.get(before.channel.id,set())
+            and after.channel!=before.channel):
+        active_veto_players.get(before.channel.id,set()).discard(member.id)
+        try:
+            await member.timeout(
+                timedelta(minutes=10),
+                reason="DOMINION FACEIT: выход из Lobby во время пиков карт",
+            )
+            try:
+                await member.send("Ты получил мут / timeout на **10 минут** за выход из Lobby во время пиков карт.")
+            except discord.HTTPException:
+                pass
+            await send_staff_log(
+                member.guild,"общий-журнал","🔇 Мут за выход во время пиков",
+                f"Игрок: {member.mention}\nLobby: **{before.channel.name}**\nНаказание: **10 минут**",
+                discord.Color.orange(),
+            )
+        except (discord.Forbidden,discord.HTTPException) as exc:
+            print(f"Veto leave timeout error for {member} ({member.id}): {exc!r}",flush=True)
+
+    if after.channel and after.channel.name.startswith("➕ Создать комнату"): 
         registered=discord.utils.get(member.guild.roles,name=REGISTERED_ROLE_NAME)
         overwrites={member.guild.default_role:discord.PermissionOverwrite(view_channel=False,connect=False),member:discord.PermissionOverwrite(view_channel=True,manage_channels=True,move_members=True,mute_members=True,connect=True)}
         if registered: overwrites[registered]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True)
@@ -2937,7 +2979,9 @@ async def setup(interaction:discord.Interaction):
     e = discord.Embed(title="🎫 ЦЕНТР ОБРАЩЕНИЙ", description="Выбери раздел: нечестная игра, жалоба на игрока, спор по матчу, обращение по персоналу, обжалование наказания или другой вопрос. Бот создаст приватный канал только для нужной группы персонала.", color=color())
     await tickets.send(embed=e, view=TicketView())
 
-    for name,(emoji,_) in LEAGUES.items():
+    # Порядок блоков лиг сверху вниз: Pro → Ascend → Rise → Default.
+    for name in ("Pro","Division","Qualifications","Default"):
+        emoji,_=LEAGUES[name]
         cat_name=league_category_name(name)
         pair_count=LEAGUE_LOBBY_COUNTS[name]
         league_categories=sorted(
@@ -3006,22 +3050,14 @@ async def setup(interaction:discord.Interaction):
             await lobby.set_permissions(registered_role,view_channel=True,connect=False)
             await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
 
-            # Сохраняем существующую очередь и удаляем только лишние панели самого бота.
-            queue_message=None
+            # Очередь больше не показывается: удаляем старые панели очереди бота.
             async for message in ranked.history(limit=50):
                 is_queue_panel=(message.author==g.me and message.embeds and message.embeds[0].title.startswith("⚔️ "))
-                if not is_queue_panel:
-                    continue
-                if f"· {lobby.name}" in message.embeds[0].title and queue_message is None:
-                    queue_message=message
-                else:
+                if is_queue_panel:
                     try: await message.delete()
                     except discord.HTTPException: pass
-            if queue_message:
-                await queue_message.edit(embed=queue_embed(lobby),view=QueueView())
-            else:
-                queue_message=await ranked.send(embed=queue_embed(lobby),view=QueueView())
-            queue_messages[lobby.id]=queue_message.id
+            queue_messages.pop(lobby.id,None)
+
 
         for stale_room in [
             voice for category in league_categories for voice in category.voice_channels
@@ -3029,6 +3065,44 @@ async def setup(interaction:discord.Interaction):
         ]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
             except discord.HTTPException: pass
+
+    # Собираем категории в строгом порядке. В каждой категории находится одна
+    # пара: ranked-N, затем Lobby N. Каналы и их названия не меняются.
+    def pair_category_number(category):
+        numbers=[]
+        for voice in category.voice_channels:
+            number=lobby_number(voice)
+            if number:
+                numbers.append(number)
+        return min(numbers) if numbers else 999
+
+    ordered_pair_categories=[]
+    for league_name in ("Pro","Division","Qualifications","Default"):
+        league_category_title=league_category_name(league_name)
+        matching=sorted(
+            [category for category in g.categories if category.name==league_category_title],
+            key=lambda category:(pair_category_number(category),category.position),
+        )
+        required=LEAGUE_LOBBY_COUNTS[league_name]
+        ordered_pair_categories.extend(matching[:required])
+        # Удаляем только лишние пустые дубликаты категорий; каналы не удаляются.
+        for extra_category in matching[required:]:
+            if not extra_category.channels:
+                try: await extra_category.delete(reason="DOMINION: лишняя пустая категория лиги")
+                except discord.HTTPException: pass
+
+    if ordered_pair_categories:
+        first_position=min(category.position for category in ordered_pair_categories)
+        # Перемещение с конца сохраняет точный итоговый порядок категорий.
+        for category_to_move in reversed(ordered_pair_categories):
+            try:
+                await category_to_move.edit(
+                    position=first_position,
+                    reason="DOMINION: порядок Pro, Ascend, Rise, Default",
+                )
+            except discord.HTTPException:
+                pass
+
     private=discord.utils.get(g.categories,name="🎧 DOMINION PRIVATE") or await g.create_category("🎧 DOMINION PRIVATE")
     await sync_channels(private, text_names=("⚙️・управление-комнатой",), voice_names=("➕ Создать комнату DOMINION",), preserve_voice_prefixes=("🏠 Комната ",))
     panel=discord.utils.get(private.text_channels,name="⚙️・управление-комнатой") or await g.create_text_channel("⚙️・управление-комнатой",category=private)

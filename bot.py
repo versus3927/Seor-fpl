@@ -600,7 +600,7 @@ def match_ocr_players(guild,match,analysis):
 
 def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
-    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н���� распознан"
+    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н������ распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
@@ -707,7 +707,7 @@ async def process_result_submission(interaction,match_id,attachment):
         error=""
         if analysis.get("error"):
             raw=str(analysis["error"])
-            error=" Модель распознавания недоступна — проверь `GEMINI_VISION_MODEL=gemini-3.6-flash` и `GEMINI_API_KEY`." if ("404" in raw or "NOT_FOUND" in raw) else f" Ошибка AI: `{raw[:180]}`"
+            error=" Модель распознавания ��едоступна — проверь `GEMINI_VISION_MODEL=gemini-3.6-flash` и `GEMINI_API_KEY`." if ("404" in raw or "NOT_FOUND" in raw) else f" Ошибка AI: `{raw[:180]}`"
         return await interaction.followup.send("❌ Не удалось уверенно прочитать итоговый счёт. Отправь более чёткий полный скриншот таблицы матча."+error,ephemeral=True)
     final_a,final_b=detected_a,detected_b
     analysis["registered_score"]=[final_a,final_b]
@@ -1522,7 +1522,7 @@ class StaffApplicationModal(discord.ui.Modal):
     age=discord.ui.TextInput(label="Возраст",placeholder="Например: 16",max_length=3)
     experience=discord.ui.TextInput(label="Опыт",style=discord.TextStyle.paragraph,placeholder="Опиши опыт модерации или поддержки",max_length=700)
     motivation=discord.ui.TextInput(label="Почему именно ты?",style=discord.TextStyle.paragraph,max_length=700)
-    online=discord.ui.TextInput(label="Онлайн в де��ь",placeholder="Например: 4–6 часов",max_length=80)
+    online=discord.ui.TextInput(label="Онлай�� в де��ь",placeholder="Например: 4–6 часов",max_length=80)
     def __init__(self,application_type):
         title=STAFF_APPLICATION_TYPES[application_type][0]
         super().__init__(title=f"Заявка: {title}"); self.application_type=application_type
@@ -1857,7 +1857,7 @@ class TicketChannelView(discord.ui.View):
         if not isinstance(interaction.channel,discord.TextChannel) or ticket_owner_id(interaction.channel) is None:
             return await interaction.response.send_message("Эта кнопка работает только внутри тикета.",ephemeral=True)
         if not can_close_ticket(interaction.user,interaction.channel):
-            return await interaction.response.send_message("Закрыть тикет может его автор или сотрудник админ��страции.",ephemeral=True)
+            return await interaction.response.send_message("Закрыть тикет может его автор или сотр��дник админ��страции.",ephemeral=True)
         await interaction.response.send_modal(CloseCurrentTicketModal())
 
 
@@ -2509,7 +2509,7 @@ async def on_guild_channel_create(channel):
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    await send_staff_log(channel.guild,"журнал-сервера","➖ Удалён канал",f"Название: **{channel.name}**\nID: `{channel.id}`",discord.Color.orange())
+    await send_staff_log(channel.guild,"журнал-сервера","➖ Удалён кан��л",f"Название: **{channel.name}**\nID: `{channel.id}`",discord.Color.orange())
 
 
 @bot.event
@@ -2782,7 +2782,7 @@ async def setup(interaction:discord.Interaction):
             except discord.Forbidden: pass
 
     # /setup синхронизирует только структуру, которой управляет бот.
-    # Посторонн��е пользовательские категории и каналы не затрагиваются.
+    # По��торонн��е пользовательские категории и каналы не затрагиваются.
     # Инкрементальный setup: существующие категории и каналы не удаляются.
     # Создаются только отсутствующие элементы, а права обновляются на нужных элементах.
 
@@ -2975,13 +2975,18 @@ async def setup(interaction:discord.Interaction):
             ordered_channels=[]
             for ranked,lobby in league_pairs:
                 ordered_channels.extend((ranked,lobby))
-            try:
-                await g.edit_channel_positions(
-                    positions={channel:base_position+offset for offset,channel in enumerate(ordered_channels)},
-                    reason="DOMINION: каждый ranked над своим Lobby",
-                )
-            except discord.HTTPException:
-                pass
+            # discord.py перемещает каналы через channel.move().
+            # Идём с конца и каждый канал ставим в начало категории —
+            # в результате сохраняется порядок ranked-1, Lobby 1, ranked-2, Lobby 2...
+            for channel in reversed(ordered_channels):
+                try:
+                    await channel.move(
+                        beginning=True,
+                        category=cat,
+                        reason="DOMINION: каждый ranked над своим Lobby",
+                    )
+                except discord.HTTPException:
+                    pass
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
             except discord.HTTPException: pass
@@ -3041,7 +3046,7 @@ async def setup(interaction:discord.Interaction):
     panel.add_field(name="⚖️ Модерация",value="`Санкции` — warn, timeout, kick, ban\n`Роли` — выдача и снятие ролей",inline=True)
     panel.add_field(name="🎮 Матчи",value="`Матчи` — информация и завершение\n`Результаты` — каналы проверки",inline=True)
     panel.add_field(name="📡 Аудит и поддержка",value="`Тикеты` — список открытых\n`Закрыть тикет` • `Аудит`",inline=True)
-    panel.set_footer(text="DOMINION CYBER • каждое действие проверяет права")
+    panel.set_footer(text="DOMINION CYBER • каждое дей��твие проверяет права")
     await staff_commands.send(embed=panel,view=StaffControlView())
     if not review.last_message_id:
         await review.send(embed=discord.Embed(title="🧾 Проверка результатов",description="Сюда поступают скриншоты игроков. Администратор проверяет данные и нажимает **Принять** или **Отклонить**.",color=color()))

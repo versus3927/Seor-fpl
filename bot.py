@@ -80,7 +80,6 @@ MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami", "Breeze", "Prison"]
 MAP_ICONS = {"Sandstone":"🏜️","Province":"🏘️","Rust":"🏭","Dune":"🌵","Hanami":"🌸","Breeze":"🌊","Prison":"⛓️"}
 MAP_VETO_TIMEOUT = 15
 REGISTERED_ROLE_NAME = "зарегистрирован"
-NEWS_PING_ROLE_NAME = "Новости"
 STARTING_ELO = 1000
 STAFF_ROLES = {
     "owner": "Owner",
@@ -112,7 +111,6 @@ EXTRA_ROLE_SPECS = {
     "sponsor": ("Server Booster", 0x00FF55, {}),
     "pro_lead": ("Pro curator", 0xC026D3, {"manage_messages": True, "move_members": True}),
     "premium": ("Premium", 0x0EA5E9, {}),
-    "news_ping": (NEWS_PING_ROLE_NAME, 0xFACC15, {}),
     "all_warn_1": ("ALL warn 1/3", 0xF87171, {}),
     "all_warn_2": ("ALL warn 2/3", 0xEF4444, {}),
     "all_warn_3": ("ALL warn 3/3", 0xB91C1C, {}),
@@ -2302,38 +2300,6 @@ async def apply_league_channel_privacy(guild):
     return changed
 
 
-NEWS_NOTIFICATION_CHANNEL_KEYWORDS=(
-    "новост","news","магазин","shop","конкурс","contest","объявлен","announcement","трансляц","stream",
-)
-
-
-def is_news_notification_channel(channel):
-    if not isinstance(channel,discord.TextChannel):
-        return False
-    name=normalized_role_name(channel.name).replace("・","-").replace("_","-")
-    return any(keyword in name for keyword in NEWS_NOTIFICATION_CHANNEL_KEYWORDS)
-
-
-async def ensure_news_mentions(guild):
-    role=find_role(guild,NEWS_PING_ROLE_NAME)
-    if not role:
-        role=await guild.create_role(name=NEWS_PING_ROLE_NAME,colour=discord.Colour(0xFACC15),mentionable=True,reason="DOMINION /setup: уведомления новостей")
-    elif not role.mentionable and role<guild.me.top_role:
-        try: await role.edit(mentionable=True,reason="DOMINION: упоминания новостей")
-        except discord.HTTPException: pass
-    assigned=0
-    if role<guild.me.top_role:
-        for member in guild.members:
-            if member.bot or role in member.roles:
-                continue
-            try:
-                await member.add_roles(role,reason="DOMINION: уведомления новостей")
-                assigned+=1
-            except discord.HTTPException:
-                pass
-    return role,assigned
-
-
 READONLY_CHANNEL_KEYWORDS=("магазин","топ-сервера","top-server","трансляц","настройка-лобби","история-игр","fpl-news","fpl-новост","новост","news","наказан","правил","регламент")
 
 
@@ -2528,17 +2494,6 @@ async def on_ready():
 async def on_message(message):
     if not message.guild or not bot.user or message.author.id==bot.user.id:
         return
-    if is_news_notification_channel(message.channel):
-        role=find_role(message.guild,NEWS_PING_ROLE_NAME)
-        if role and role not in message.role_mentions and not message.mention_everyone:
-            try:
-                await message.channel.send(
-                    f"🔔 {role.mention} Новое сообщение в {message.channel.mention}",
-                    allowed_mentions=discord.AllowedMentions(roles=True,everyone=False,users=False),
-                    delete_after=15,
-                )
-            except discord.HTTPException:
-                pass
     await bot.process_commands(message)
 
 
@@ -2559,10 +2514,6 @@ async def on_guild_channel_delete(channel):
 
 @bot.event
 async def on_member_join(member):
-    news_role=find_role(member.guild,NEWS_PING_ROLE_NAME)
-    if news_role and news_role<member.guild.me.top_role:
-        try: await member.add_roles(news_role,reason="DOMINION: уведомления новостей")
-        except discord.HTTPException: pass
     if member.bot: return
     await send_staff_log(member.guild,"журнал-участников","📥 Новый участник",f"Участник: {member.mention}\nID: `{member.id}`\nАккаунт создан: <t:{int(member.created_at.timestamp())}:F>",discord.Color.green())
     try: await member.send(embed=registration_embed(member))
@@ -3102,7 +3053,11 @@ async def setup(interaction:discord.Interaction):
 
     await send_staff_log(g,"общий-журнал","✅ Структура DOMINION синхронизирована",f"Запустил: {interaction.user.mention}\nРоли и закрытые разделы обновлены.",discord.Color.green())
     applications_panel=await ensure_staff_application_system(g)
-    news_role,news_assigned=await ensure_news_mentions(g)
+    # Роль `Новости` больше не используется: /setup удаляет её с сервера.
+    for obsolete_role in [role for role in g.roles if normalized_role_name(role.name)==normalized_role_name("Новости")]:
+        if obsolete_role<g.me.top_role:
+            try: await obsolete_role.delete(reason="DOMINION /setup: роль Новости удалена")
+            except discord.HTTPException: pass
     await apply_pre_registration_visibility(g)
     await apply_league_channel_privacy(g)
     await apply_public_readonly_channels(g)
@@ -3114,7 +3069,7 @@ async def setup(interaction:discord.Interaction):
     except discord.HTTPException:
         pass
 
-    await interaction.followup.send("Готово: структура синхронизирована. Создана панель заявок Moderator/Game Support и включены упоминания в новостных каналах. Старые тестовые и warn-роли удалены. Без `/setup` бот не создаёт каналы.",ephemeral=True)
+    await interaction.followup.send("Готово: структура синхронизирована. Создана панель заявок Moderator/Game Support и роль `Новости` удалена и больше не создаётся. Старые тестовые и warn-роли удалены. Без `/setup` бот не создаёт каналы.",ephemeral=True)
 
 
 @bot.tree.command(name="sync_default_league",description="Выдать Default League всем зарегистрированным")

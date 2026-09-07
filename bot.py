@@ -600,7 +600,7 @@ def match_ocr_players(guild,match,analysis):
 
 def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
-    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "не распознан"
+    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н�� распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
@@ -823,7 +823,7 @@ class DashboardPanelView(discord.ui.View):
         elif section=="party":
             self._button("Создать пати","➕",discord.ButtonStyle.success,self.party_create)
             self._button("Моё пати","👥",discord.ButtonStyle.primary,self.party_show)
-            self._button("Покинуть","🚪",discord.ButtonStyle.danger,self.party_leave)
+            self._button("Покинуть","��",discord.ButtonStyle.danger,self.party_leave)
         elif section=="account":
             self._button("Изменить игровой ID","🪪",discord.ButtonStyle.primary,self.change_id)
             self._button("Данные аккаунта","📋",discord.ButtonStyle.secondary,self.account)
@@ -1857,7 +1857,7 @@ class TicketChannelView(discord.ui.View):
         if not isinstance(interaction.channel,discord.TextChannel) or ticket_owner_id(interaction.channel) is None:
             return await interaction.response.send_message("Эта кнопка работает только внутри тикета.",ephemeral=True)
         if not can_close_ticket(interaction.user,interaction.channel):
-            return await interaction.response.send_message("Закрыть тикет может его автор или сотрудник администрации.",ephemeral=True)
+            return await interaction.response.send_message("Закрыть тикет может его автор или сотрудник админ��страции.",ephemeral=True)
         await interaction.response.send_modal(CloseCurrentTicketModal())
 
 
@@ -2968,13 +2968,18 @@ async def setup(interaction:discord.Interaction):
                 queue_message=await ranked.send(embed=queue_embed(lobby),view=QueueView())
             queue_messages[lobby.id]=queue_message.id
 
-        # Place ranked-N immediately above its matching Lobby N.
+        # Сначала размещаем все ranked-каналы, затем все Lobby.
         if league_pairs:
             base_position=min(item.position for item in cat.channels)
-            for offset,(ranked,lobby) in enumerate(league_pairs):
+            for offset,(ranked,_) in enumerate(league_pairs):
                 try:
-                    await ranked.edit(position=base_position+offset*2,reason="DOMINION: ranked над своим lobby")
-                    await lobby.edit(position=base_position+offset*2+1,reason="DOMINION: lobby под своим ranked")
+                    await ranked.edit(position=base_position+offset,reason="DOMINION: ranked над лобби")
+                except discord.HTTPException:
+                    pass
+            lobby_start=base_position+len(league_pairs)
+            for offset,(_,lobby) in enumerate(league_pairs):
+                try:
+                    await lobby.edit(position=lobby_start+offset,reason="DOMINION: лобби под ranked")
                 except discord.HTTPException:
                     pass
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:

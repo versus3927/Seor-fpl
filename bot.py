@@ -1808,7 +1808,7 @@ async def ensure_ticket_inbox(guild):
         if role:
             overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
     channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="DOMINION FACEIT: входящие тикеты")
-    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смо��ут только профильные сотрудники и старшее руководство.",color=color())
+    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="��юда поступают уведомления обо всех новых обращениях. Открыть сам тикет смо��ут только профильные сотрудники и старшее руководство.",color=color())
     await channel.send(embed=intro)
     return channel
 
@@ -3022,17 +3022,22 @@ async def setup(interaction:discord.Interaction):
             return [channel for category in league_categories for channel in category.voice_channels]
 
         lobby_names=tuple(f"Lobby {i}" for i in range(1,pair_count+1))
-        ranked_names=tuple(ranked_channel_name(i) for i in range(1,pair_count+1))
-        legacy_ranked=next((channel for channel in all_league_text_channels() if channel.name=="ranked"),None)
-        if legacy_ranked and not any(channel.name==ranked_names[0] for channel in all_league_text_channels()):
-            await legacy_ranked.edit(name=ranked_names[0],reason="DOMINION: отдельный ranked для Lobby 1")
+        # Во всех отдельных категориях текстовый канал называется одинаково: ranked.
+        ranked_candidates=[
+            channel for channel in all_league_text_channels()
+            if channel.name=="ranked" or re.fullmatch(r"ranked-\\d+",channel.name)
+        ]
+        used_ranked_ids=set()
 
         for index,lobby_name in enumerate(lobby_names,1):
             pair_category=league_categories[index-1]
-            ranked_name=ranked_channel_name(index)
-            ranked=(discord.utils.get(pair_category.text_channels,name=ranked_name)
-                    or next((channel for channel in all_league_text_channels() if channel.name==ranked_name),None)
-                    or await g.create_text_channel(ranked_name,category=pair_category))
+            ranked=(next((channel for channel in pair_category.text_channels if channel.name=="ranked"),None)
+                    or next((channel for channel in pair_category.text_channels if channel.name==f"ranked-{index}"),None)
+                    or next((channel for channel in ranked_candidates if channel.id not in used_ranked_ids),None)
+                    or await g.create_text_channel("ranked",category=pair_category))
+            used_ranked_ids.add(ranked.id)
+            if ranked.name!="ranked":
+                await ranked.edit(name="ranked",reason="DOMINION: единое название ranked без цифр")
             lobby=(discord.utils.get(pair_category.voice_channels,name=lobby_name)
                    or next((channel for channel in all_league_voice_channels() if channel.name==lobby_name),None)
                    or await g.create_voice_channel(lobby_name,category=pair_category,user_limit=LOBBY_SIZE))

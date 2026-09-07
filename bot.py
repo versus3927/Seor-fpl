@@ -45,10 +45,37 @@ LEAGUE_CATEGORY_NAMES={
     "Pro":"🔴・PRO LEAGUE",
 }
 LEAGUE_LOBBY_COUNTS={"Default":3,"Qualifications":3,"Division":2,"Pro":2}
+LEAGUE_DISPLAY_NAMES={
+    "Default":"Default League",
+    "Qualifications":"Dominion Rise",
+    "Division":"Dominion Ascend",
+    "Pro":"Pro League",
+}
+
+
+def league_display_name(league):
+    return LEAGUE_DISPLAY_NAMES.get(str(league),str(league))
 
 
 def league_category_name(league_name):
     return LEAGUE_CATEGORY_NAMES[league_name]
+def lobby_number(channel_or_name):
+    name=channel_or_name.name if hasattr(channel_or_name,"name") else str(channel_or_name)
+    try: return int(name.rsplit(" ",1)[1])
+    except (ValueError,IndexError): return None
+
+
+def ranked_channel_name(lobby_or_number):
+    number=lobby_or_number if isinstance(lobby_or_number,int) else lobby_number(lobby_or_number)
+    return f"ranked-{number}" if number else "ranked"
+
+
+def ranked_channel_for_lobby(lobby):
+    target=ranked_channel_name(lobby)
+    return (discord.utils.get(lobby.category.text_channels,name=target)
+            or discord.utils.get(lobby.category.text_channels,name="ranked"))
+
+
 MAPS = ["Sandstone", "Province", "Rust", "Dune", "Hanami", "Breeze", "Prison"]
 MAP_ICONS = {"Sandstone":"🏜️","Province":"🏘️","Rust":"🏭","Dune":"🌵","Hanami":"🌸","Breeze":"🌊","Prison":"⛓️"}
 MAP_VETO_TIMEOUT = 15
@@ -331,7 +358,7 @@ def queue_embed(channel):
     members = live_members(channel)
     lines = "\n".join(f"`{i:02}` {m.mention}" for i, m in enumerate(members, 1)) or "Пока никого. Зайди в голосовой канал — бот добавит автоматически."
     e = discord.Embed(
-        title=f"⚔️ {league.upper()} · {channel.name}",
+        title=f"⚔️ {league_display_name(league).upper()} · {channel.name}",
         description=f"{emoji} **Очередь открыта.** Зайдите в голосовой канал, чтобы участвовать.\n\n**Подтверждённые игроки:** `{len(members)}/{LOBBY_SIZE}`\n**Голосовой канал:** {channel.mention}\n\n**В очереди**\n{lines}\n\n**До старта:** `{max(0, LOBBY_SIZE-len(members))}`",
         color=color(),
     )
@@ -548,6 +575,27 @@ def match_ocr_players(guild,match,analysis):
             item["user_id"]=selected["user_id"]
             used.add(selected["user_id"])
         matched.append(item)
+    recognized_count=len(used)
+    team_a_ids={int(x) for x in match["team_a"].split(",") if x}
+    absent=[]
+    for candidate in candidates:
+        if candidate["user_id"] in used:
+            continue
+        fallback={
+            "user_id":candidate["user_id"],
+            "name":candidate["names"][0] if candidate["names"] else f"Player {candidate['user_id']}",
+            "game_id":candidate["game_id"],
+            "team":"A" if candidate["user_id"] in team_a_ids else "B",
+            "kills":0,
+            "assists":0,
+            "deaths":13,
+            "mvp":0,
+            "absent_from_screenshot":True,
+        }
+        matched.append(fallback)
+        absent.append(candidate["user_id"])
+    analysis["recognized_players"]=recognized_count
+    analysis["absent_players"]=absent
     analysis["matched_stats"]=matched
     return analysis
 
@@ -559,7 +607,7 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
         game_id=f" · ID `{item['game_id']}`" if item.get("game_id") else ""
-        line=f"{player}{game_id}\n`{item.get('kills',0):02}/{item.get('deaths',0):02}/{item.get('assists',0):02}` · MVP **{item.get('mvp',0)}**"
+        line=f"{player}{game_id}\n`{item.get('kills',0):02}/{item.get('assists',0):02}/{item.get('deaths',0):02}` · MVP **{item.get('mvp',0)}**"
         team=str(item.get("team") or "").upper()
         if not item.get("user_id"):
             unmatched.append(f"⚠️ {item.get('name','?')}")
@@ -573,12 +621,14 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
         color=embed_color,
     )
     e.add_field(name="Результат",value=f"Со скриншота: **{detected}**\nК регистрации: **{final_score}**\nИсточник: **автораспознавание**",inline=True)
-    e.add_field(name="Матч",value=f"Лига: **{match['league']}**\nКарта: **{analysis.get('map') or match.get('map') or 'не определена'}**\nХост: <@{match['host_id']}>",inline=True)
-    e.add_field(name="Распознавание",value=f"Точность: **{confidence:.0f}%**\nМодель: `{analysis.get('model') or 'ручной режим'}`\nИгроков: **{len(analysis.get('matched_stats',[]))}/10**",inline=True)
-    e.add_field(name="CT · K / D / A",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
-    e.add_field(name="T · K / D / A",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
+    e.add_field(name="Матч",value=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{analysis.get('map') or match.get('map') or 'не определена'}**\nХост: <@{match['host_id']}>",inline=True)
+    e.add_field(name="Распознавание",value=f"Точность: **{confidence:.0f}%**\nМодель: `{analysis.get('model') or 'ручной режим'}`\nРаспознано: **{analysis.get('recognized_players',len(analysis.get('matched_stats',[])))}/10**",inline=True)
+    e.add_field(name="CT · K / A / D",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
+    e.add_field(name="T · K / A / D",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
     notes=[]
     if analysis.get("notes"): notes.append(str(analysis["notes"]))
+    absent_ids=analysis.get("absent_players",[])
+    if absent_ids: notes.append("Нет на финальном скрине — записано K/A/D 0/0/13: "+", ".join(f"<@{uid}>" for uid in absent_ids))
     if unmatched: notes.append("Не привязаны: "+", ".join(unmatched))
     if has_error:
         raw=str(analysis["error"])
@@ -588,6 +638,13 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
     e.add_field(name="Проверка модератором",value=("\n".join(notes)[:1024] if notes else "Сверь счёт, команды и статистику со скриншотом."),inline=False)
     e.set_footer(text="DOMINION FACEIT · принять только после сверки скриншота")
     return e
+
+
+def guild_match(guild_id,match_id):
+    match=db.match(match_id)
+    if not match or int(match.get("guild_id",0))!=int(guild_id):
+        return None
+    return match
 
 
 class ResultSubmitView(discord.ui.View):
@@ -628,9 +685,9 @@ class ResultSubmitModal(discord.ui.Modal, title="Отправка результ
 
 
 async def process_result_submission(interaction,match_id,attachment):
-    match=db.match(match_id)
+    match=guild_match(interaction.guild_id,match_id)
     if not match:
-        return await interaction.followup.send("Матч с таким номером не найден.",ephemeral=True)
+        return await interaction.followup.send("Игры с таким номером нет.",ephemeral=True)
     players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
     if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
         return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
@@ -691,14 +748,14 @@ class MatchLookupDashboardModal(discord.ui.Modal, title="Поиск матча")
     match_id = discord.ui.TextInput(label="ID матча", placeholder="Например: 700", max_length=10)
 
     async def on_submit(self, interaction):
-        try: m=db.match(int(str(self.match_id)))
+        try: m=guild_match(interaction.guild_id,int(str(self.match_id)))
         except ValueError: m=None
         if not m:
-            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+            return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         a=" ".join(f"<@{x}>" for x in m["team_a"].split(",") if x)
         b=" ".join(f"<@{x}>" for x in m["team_b"].split(",") if x)
         score=f"{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}"
-        e=discord.Embed(title=f"🎮 Матч #{m['id']}",description=f"Лига: **{m['league']}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{score}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
+        e=discord.Embed(title=f"🎮 Матч #{m['id']}",description=f"Лига: **{league_display_name(m['league'])}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{score}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
         await interaction.response.send_message(embed=e,ephemeral=True)
 
 
@@ -793,7 +850,7 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message(f"📈 Текущая форма: **{p['wins']}W / {p['losses']}L**, WR **{wr:.0f}%**, K/D **{kd:.2f}**.",ephemeral=True)
 
     async def top(self,i):
-        await i.response.send_message("Используй `/top` и выбери лигу: Default, Qualifications, Division или Pro.",ephemeral=True)
+        await i.response.send_message("Используй `/top` и выбери лигу: Default League, Dominion Rise, Dominion Ascend или Pro League.",ephemeral=True)
 
     async def place(self,i):
         rows=db.leaders(i.guild_id,1000); pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.player(i.guild_id,i.user.id)
@@ -804,7 +861,7 @@ class DashboardPanelView(discord.ui.View):
 
     async def matches(self,i): await send_recent_matches(i)
 
-    async def party_create(self,i): await i.response.send_message("Используй `/party create` и выбери лигу: Default, Qualifications, Pro или PC.",ephemeral=True)
+    async def party_create(self,i): await i.response.send_message("Используй `/party create` и выбери лигу: Default League, Dominion Rise, Pro League или PC.",ephemeral=True)
     async def party_show(self,i):
         party=db.party_for_user(i.guild_id,i.user.id)
         if not party: return await i.response.send_message("👥 Ты не состоишь в активном пати.",ephemeral=True)
@@ -1377,10 +1434,10 @@ class MatchAdminModal(discord.ui.Modal,title="Управление матчем"
     async def on_submit(self,interaction):
         try: match_id=int(str(self.match_id)); match=db.match(match_id)
         except ValueError: match=None
-        if not match: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+        if not match: return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         action=str(self.action).strip().lower()
         if action=="info":
-            return await interaction.response.send_message(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{match['league']}**\nКарта: **{match['map']}**\nСтатус: **{match['status']}**\nСчёт: **{match['score_a']}:{match['score_b']}**",color=color()),ephemeral=True)
+            return await interaction.response.send_message(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{match['map']}**\nСтатус: **{match['status']}**\nСчёт: **{match['score_a']}:{match['score_b']}**",color=color()),ephemeral=True)
         if action!="finish": return await interaction.response.send_message("Действие: `info` или `finish`.",ephemeral=True)
         try:
             a,b=[int(x) for x in str(self.score).replace("-",":").split(":",1)]
@@ -1845,8 +1902,10 @@ class ResultModal(discord.ui.Modal, title="Результат матча"):
             assert (a == 13 or b == 13) and a != b and min(a,b) >= 0
         except Exception:
             return await interaction.response.send_message("Формат: `13:9`; одна команда должна иметь 13.", ephemeral=True)
+        if not guild_match(interaction.guild_id,self.match_id):
+            return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         if not db.finish_match(self.match_id,a,b):
-            return await interaction.response.send_message("Матч не найден или уже завершён.", ephemeral=True)
+            return await interaction.response.send_message("Игра уже завершена.",ephemeral=True)
         e=discord.Embed(title=f"🏁 Матч #{self.match_id} завершён",description=f"Итоговый счёт: **{a}:{b}**\nРейтинг игроков обновлён.",color=discord.Color.green())
         await interaction.response.send_message(embed=e)
 
@@ -1885,7 +1944,7 @@ class LeagueTopView(discord.ui.View):
     @discord.ui.button(label="Default",emoji="⚪",style=discord.ButtonStyle.secondary,custom_id="top:default",row=0)
     async def default_top(self,i,b): await send_league_top(i,"Default")
 
-    @discord.ui.button(label="Qualifications",emoji="🟡",style=discord.ButtonStyle.secondary,custom_id="top:qualifications",row=0)
+    @discord.ui.button(label="Dominion Rise",emoji="🟡",style=discord.ButtonStyle.secondary,custom_id="top:qualifications",row=0)
     async def qualifications_top(self,i,b): await send_league_top(i,"Qualifications")
 
     @discord.ui.button(label="Division",emoji="🟣",style=discord.ButtonStyle.secondary,custom_id="top:division",row=0)
@@ -1898,7 +1957,7 @@ class LeagueTopView(discord.ui.View):
 def league_top_embed():
     e=discord.Embed(title="🏆 ТОП СЕРВЕРА",description="Выбери лигу — бот пришлёт красочную карточку топ-10 игроков этой лиги.",color=color())
     e.add_field(name="⚪ Default",value="Участники Default League",inline=True)
-    e.add_field(name="🟡 Qualifications",value="Участники квалификации",inline=True)
+    e.add_field(name="🟢 Dominion Rise",value="Участники квалификации",inline=True)
     e.add_field(name="🟣 Division",value="Участники Division",inline=True)
     e.add_field(name="🔴 Pro",value="Участники Pro",inline=True)
     e.set_footer(text="Топ строится по ELO и учитывает только игроков с ролью лиги")
@@ -1938,7 +1997,7 @@ async def send_profile(interaction,member=None):
 
 async def update_queue(channel):
     if not is_lobby(channel) or not league_of(channel): return
-    text = next((c for c in channel.category.text_channels if c.name.endswith("ranked")), None)
+    text=ranked_channel_for_lobby(channel)
     if not text: return
     key=channel.id
     msg=None
@@ -1978,12 +2037,12 @@ class MapVetoView(discord.ui.View):
         else:
             available="  ".join(f"{MAP_ICONS[m]} **{m}**" for m in self.remaining)
             log="\n".join(self.history[-6:]) or "Банов пока нет."
-            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас ходит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
+            e=discord.Embed(title="🗺️ РАСПИК КАРТ",description=f"Капитаны по очереди исключают карты. На ход даётся **{MAP_VETO_TIMEOUT} секунд**. Если капитан не отвечает, бот автоматически банит случайную карту.\n\n**Сейчас банит:** {self.captain.mention}\n**Доступные карты:**\n{available}",color=discord.Color.from_rgb(124,58,237))
             e.add_field(name="🛡 Капитан CT",value=self.captains[0].mention,inline=True)
             e.add_field(name="💣 Капитан T",value=self.captains[1].mention,inline=True)
             e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=True)
             e.add_field(name="История банов",value=log,inline=False)
-        e.set_footer(text=f"DOMINION MAP VETO • {self.league} • осталось карт: {len(self.remaining)}")
+        e.set_footer(text=f"DOMINION MAP VETO • {league_display_name(self.league)} • осталось карт: {len(self.remaining)}")
         return e
 
     def rebuild(self):
@@ -2087,7 +2146,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
         if m.bot: continue
         try: await m.move_to(vb)
         except discord.HTTPException: pass
-    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\nНажми **Получить ID** — бот автоматически покажет Standoff 2 ID хоста, указанный при регистрации.",color=color())
+    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"{LEAGUES[league][0]} Лига **{league_display_name(league)}**\nКарта: **{map_name}**\nФормат: **до 13 раундов**\nХост: {host.mention}\n\n**Комнаты:** {va.mention} · {vb.mention}\nНажми **Получить ID** — бот автоматически покажет Standoff 2 ID хоста, указанный при регистрации.",color=color())
     e.add_field(name="🛡 CT",value="\n".join(f"• {m.mention}" for m in a))
     e.add_field(name="💣 T",value="\n".join(f"• {m.mention}" for m in b))
     view=discord.ui.View(timeout=None)
@@ -2101,7 +2160,7 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
     await text.send(content=" ".join(m.mention for m in members),embed=e,view=view,file=discord.File(match_image,filename="dominion-match.png"))
     await send_staff_log(
         lobby.guild,"журнал-матчей","🎮 Создан новый матч",
-        f"Матч: **#{match_id}**\nЛига: **{league}**\nКарта: **{map_name}**\nХост: {host.mention}\nИгроков: **{len(members)}**",
+        f"Матч: **#{match_id}**\nЛига: **{league_display_name(league)}**\nКарта: **{map_name}**\nХост: {host.mention}\nИгроков: **{len(members)}**",
         discord.Color.purple(),
     )
     await update_queue(lobby)
@@ -2584,9 +2643,9 @@ async def on_interaction(interaction):
         party=db.party_for_user(interaction.guild_id,interaction.user.id)
         return await interaction.response.edit_message(content=f"✅ {interaction.user.mention} вступил в пати!",embed=party_embed(party),view=None)
     if cid.startswith("match:getid:"):
-        match_id=int(cid.rsplit(":",1)[1]); match_data=db.match(match_id)
+        match_id=int(cid.rsplit(":",1)[1]); match_data=guild_match(interaction.guild_id,match_id)
         if not match_data:
-            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+            return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         player_ids={int(x) for x in (match_data["team_a"]+","+match_data["team_b"]).split(",") if x}
         if interaction.user.id not in player_ids and not can_administer(interaction.user):
             return await interaction.response.send_message("ID доступен только участникам матча.",ephemeral=True)
@@ -2602,8 +2661,10 @@ async def on_interaction(interaction):
         sub = db.submission(submission_id)
         if not sub or sub["status"] != "pending":
             return await interaction.response.send_message("Заявка уже обработана или не найдена.", ephemeral=True)
-        match_data=db.match(sub["match_id"])
-        allowed=can_administer(interaction.user) or (match_data and curator_league(interaction.user)==str(match_data["league"]).lower())
+        match_data=guild_match(interaction.guild_id,sub["match_id"])
+        if not match_data:
+            return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
+        allowed=can_administer(interaction.user) or curator_league(interaction.user)==str(match_data["league"]).lower()
         if not allowed:
             return await interaction.response.send_message("Подтверждать игру может Admin, Owner или куратор этой лиги.", ephemeral=True)
         await interaction.response.defer()
@@ -2673,7 +2734,7 @@ async def on_voice_state_update(member,before,after):
 
 def party_embed(party):
     members="\n".join(f"• <@{uid}>"+(" 👑" if uid==party["leader_id"] else "") for uid in party["members"])
-    return discord.Embed(title=f"👥 Пати #{party['id']}",description=f"Лига: **{party['league']}**\nУчастники: **{len(party['members'])}/3**\n\n{members}",color=color())
+    return discord.Embed(title=f"👥 Пати #{party['id']}",description=f"Лига: **{league_display_name(party['league'])}**\nУчастники: **{len(party['members'])}/3**\n\n{members}",color=color())
 
 
 party_group=app_commands.Group(name="party",description="Управление пати")
@@ -2682,7 +2743,7 @@ party_group=app_commands.Group(name="party",description="Управление п
 @app_commands.check(command_channel_access)
 @app_commands.choices(league=[
     app_commands.Choice(name="Default",value="Default"),
-    app_commands.Choice(name="Qualifications",value="Qualifications"),
+    app_commands.Choice(name="Dominion Rise",value="Qualifications"),
     app_commands.Choice(name="Pro",value="Pro"),
     app_commands.Choice(name="PC",value="PC"),
 ])
@@ -2705,7 +2766,7 @@ async def party_invite_command(interaction:discord.Interaction,member:discord.Me
     view=discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="Вступить",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"party:accept:{party['id']}:{member.id}"))
     view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.secondary,custom_id=f"party:decline:{party['id']}:{member.id}"))
-    await interaction.response.send_message(content=f"{member.mention}, тебя приглашают в пати **{party['league']}**.",embed=party_embed(party),view=view)
+    await interaction.response.send_message(content=f"{member.mention}, тебя приглашают в пати **{league_display_name(party['league'])}**.",embed=party_embed(party),view=view)
 
 @party_group.command(name="info",description="Показать своё пати")
 @app_commands.check(command_channel_access)
@@ -2821,7 +2882,12 @@ async def setup(interaction:discord.Interaction):
         await registration_channel.send(embed=registration_panel,view=RegistrationView())
 
     info = await category("📡 DOMINION INFO")
-    info_names=("📣・объявления", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
+    old_news=discord.utils.get(info.text_channels,name="📣・объявления")
+    current_news=discord.utils.get(info.text_channels,name="📣・news")
+    if old_news and not current_news:
+        try: await old_news.edit(name="📣・news",reason="DOMINION: объявления переименованы в news")
+        except discord.HTTPException: pass
+    info_names=("📣・news", "📜・регламент", "🛍️・магазин", "📨・новости-лиги", "🧩・настройка-лобби", "📺・трансляции")
     await sync_channels(info, text_names=info_names)
     for channel_name in info_names:
         info_channel=await text(info,channel_name)
@@ -2916,25 +2982,53 @@ async def setup(interaction:discord.Interaction):
         await cat.set_permissions(staff_roles["owner"],view_channel=True,connect=True,send_messages=True,move_members=True)
         await cat.set_permissions(staff_roles["admin"],view_channel=True,connect=True,send_messages=True,move_members=True)
         lobby_names=tuple(f"Lobby {i}" for i in range(1,LEAGUE_LOBBY_COUNTS[name]+1))
-        await sync_channels(cat,text_names=("ranked",),voice_names=lobby_names,preserve_voice_prefixes=("🛡 CT · #","💣 T · #"))
-        ranked=discord.utils.get(cat.text_channels,name="ranked") or await g.create_text_channel("ranked",category=cat)
-        ranked_was_empty=not ranked.last_message_id
-        await ranked.set_permissions(league_role,view_channel=True,send_messages=True,read_message_history=True,use_application_commands=True)
-        league_lobbies=[]
-        for lobby_name in lobby_names:
+        ranked_names=tuple(ranked_channel_name(i) for i in range(1,LEAGUE_LOBBY_COUNTS[name]+1))
+        legacy_ranked=discord.utils.get(cat.text_channels,name="ranked")
+        if legacy_ranked and not discord.utils.get(cat.text_channels,name=ranked_names[0]):
+            await legacy_ranked.edit(name=ranked_names[0],reason="DOMINION: отдельный ranked для Lobby 1")
+        await sync_channels(cat,text_names=ranked_names,voice_names=lobby_names,preserve_voice_prefixes=("🛡 CT · #","💣 T · #"))
+        league_pairs=[]
+        for index,lobby_name in enumerate(lobby_names,1):
+            ranked_name=ranked_channel_name(index)
+            ranked=discord.utils.get(cat.text_channels,name=ranked_name) or await g.create_text_channel(ranked_name,category=cat)
             lobby=discord.utils.get(cat.voice_channels,name=lobby_name) or await g.create_voice_channel(lobby_name,category=cat,user_limit=LOBBY_SIZE)
-            league_lobbies.append(lobby)
+            league_pairs.append((ranked,lobby))
+            await ranked.set_permissions(league_role,view_channel=True,send_messages=False,read_message_history=True,use_application_commands=True)
             if lobby.user_limit!=LOBBY_SIZE:
                 await lobby.edit(user_limit=LOBBY_SIZE,reason="DOMINION: синхронизация LOBBY_SIZE")
             await lobby.set_permissions(g.default_role,view_channel=False,connect=False)
             await lobby.set_permissions(registered_role,view_channel=True,connect=False)
             await lobby.set_permissions(league_role,view_channel=True,connect=True,speak=True)
+
+            # Keep exactly one queue panel in the ranked channel paired with this lobby.
+            queue_message=None
+            async for message in ranked.history(limit=50):
+                is_queue_panel=(message.author==g.me and message.embeds and message.embeds[0].title.startswith("⚔️ "))
+                if not is_queue_panel:
+                    continue
+                if f"· {lobby.name}" in message.embeds[0].title and queue_message is None:
+                    queue_message=message
+                else:
+                    try: await message.delete()
+                    except discord.HTTPException: pass
+            if queue_message:
+                await queue_message.edit(embed=queue_embed(lobby),view=QueueView())
+            else:
+                queue_message=await ranked.send(embed=queue_embed(lobby),view=QueueView())
+            queue_messages[lobby.id]=queue_message.id
+
+        # Place ranked-N immediately above its matching Lobby N.
+        if league_pairs:
+            base_position=min(item.position for item in cat.channels)
+            for offset,(ranked,lobby) in enumerate(league_pairs):
+                try:
+                    await ranked.edit(position=base_position+offset*2,reason="DOMINION: ranked над своим lobby")
+                    await lobby.edit(position=base_position+offset*2+1,reason="DOMINION: lobby под своим ranked")
+                except discord.HTTPException:
+                    pass
         for stale_room in [v for v in cat.voice_channels if v.name.startswith(("🛡 CT · #","💣 T · #")) and not v.members]:
             try: await stale_room.delete(reason="DOMINION /setup: удаление пустой комнаты матча")
             except discord.HTTPException: pass
-        if ranked_was_empty:
-            for lobby in league_lobbies:
-                msg=await ranked.send(embed=queue_embed(lobby),view=QueueView()); queue_messages[lobby.id]=msg.id
     private=discord.utils.get(g.categories,name="🎧 DOMINION PRIVATE") or await g.create_category("🎧 DOMINION PRIVATE")
     await sync_channels(private, text_names=("⚙️・управление-комнатой",), voice_names=("➕ Создать комнату DOMINION",), preserve_voice_prefixes=("🏠 Комната ",))
     panel=discord.utils.get(private.text_channels,name="⚙️・управление-комнатой") or await g.create_text_channel("⚙️・управление-комнатой",category=private)
@@ -3012,7 +3106,15 @@ async def setup(interaction:discord.Interaction):
     await apply_pre_registration_visibility(g)
     await apply_league_channel_privacy(g)
     await apply_public_readonly_channels(g)
-    await interaction.followup.send("Готово: структура синхронизирована. Создана панель заявок Moderator/Game Support и включены упоминания в новостных каналах. Старые Division/Qualifications-роли удалены. Без `/setup` бот не создаёт каналы.",ephemeral=True)
+    # Requested sidebar order: results and private-room creation at the top; staff at the bottom.
+    try:
+        await results.edit(position=0,reason="DOMINION /setup: результаты наверх")
+        await private.edit(position=1,reason="DOMINION /setup: создание комнат наверх")
+        await admin.edit(position=max((category.position for category in g.categories),default=0),reason="DOMINION /setup: staff вниз")
+    except discord.HTTPException:
+        pass
+
+    await interaction.followup.send("Готово: структура синхронизирована. Создана панель заявок Moderator/Game Support и включены упоминания в новостных каналах. Старые тестовые и warn-роли удалены. Без `/setup` бот не создаёт каналы.",ephemeral=True)
 
 
 @bot.tree.command(name="sync_default_league",description="Выдать Default League всем зарегистрированным")
@@ -3269,9 +3371,9 @@ async def matches_command(interaction:discord.Interaction): await send_recent_ma
 @app_commands.check(command_channel_access)
 async def match_info(interaction:discord.Interaction,match_id:int):
     m=db.match(match_id)
-    if not m: return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+    if not m: return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
     a=" ".join(f"<@{x}>" for x in m["team_a"].split(",")); b=" ".join(f"<@{x}>" for x in m["team_b"].split(","))
-    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{m['league']}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
+    e=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{league_display_name(m['league'])}**\nКарта: **{m['map']}**\nСтатус: **{m['status']}**\nСчёт: **{m['score_a'] if m['score_a'] is not None else '?'}:{m['score_b'] if m['score_b'] is not None else '?'}**\n\n🛡 CT: {a}\n💣 T: {b}",color=color())
     await interaction.response.send_message(embed=e,ephemeral=True)
 
 
@@ -3284,7 +3386,7 @@ def standard_embed(guild_id,user):
         result=f"✅ Норматив выполнен: K/D {kd:.2f} ≥ {QUALIFICATION_KD:.2f}."
     else:
         result=f"❌ Норматив не выполнен: K/D {kd:.2f} < {QUALIFICATION_KD:.2f}."
-    return discord.Embed(title="📗 Стандарт квалификации",description=f"Лига: **{league}**\nТекущий K/D: **{kd:.2f}**\nСтандарт: **{QUALIFICATION_KD:.2f} K/D**\nОсвобождение: **Division и Pro**\n\n{result}",color=discord.Color.green() if passed else discord.Color.red())
+    return discord.Embed(title="📗 Стандарт квалификации",description=f"Лига: **{league_display_name(league)}**\nТекущий K/D: **{kd:.2f}**\nСтандарт: **{QUALIFICATION_KD:.2f} K/D**\nОсвобождение: **Division и Pro**\n\n{result}",color=discord.Color.green() if passed else discord.Color.red())
 
 
 @bot.tree.command(name="standard",description="Показать стандарт квалификации K/D")
@@ -3303,7 +3405,7 @@ async def qualification(interaction:discord.Interaction):
 @app_commands.check(command_channel_access)
 @app_commands.choices(league=[
     app_commands.Choice(name="Default",value="Default"),
-    app_commands.Choice(name="Qualifications",value="Qualifications"),
+    app_commands.Choice(name="Dominion Rise",value="Qualifications"),
     app_commands.Choice(name="Division",value="Division"),
     app_commands.Choice(name="Pro",value="Pro"),
 ])

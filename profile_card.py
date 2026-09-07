@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parent
 W=H=1600
 BG=(3,2,10); PANEL=(14,8,31); CARD=(28,14,53); PURPLE=(172,59,255); PINK=(236,62,183); CYAN=(92,205,245); WHITE=(248,246,252); MUTED=(174,154,194); GREEN=(57,218,142); RED=(242,72,126)
 MAPS=('Sandstone','Rust','Province','Prison','Hanami','Dune','Breeze')
-LEAGUE_NAMES={'Default':'Default','Qualifications':'Rise','Division':'Ascend','Pro':'Pro'}
+LEAGUE_NAMES={'Default':'Default League','Qualifications':'Dominion Rise','Division':'Dominion Ascend','Pro':'Pro League'}
 
 def font(n,b=False):
  p=ROOT/'assets'/'fonts'/('Arial-Bold.ttf' if b else 'Arial.ttf'); return ImageFont.truetype(str(p),n)

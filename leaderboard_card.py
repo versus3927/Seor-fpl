@@ -5,7 +5,7 @@ from PIL import Image,ImageDraw,ImageFilter,ImageFont,ImageOps
 from elo_levels import elo_level
 W=H=1400; ROOT=Path(__file__).resolve().parent
 BG=(3,2,9); PANEL=(16,9,29); CELL=(24,14,40); PURPLE=(171,60,255); PINK=(239,57,175); WHITE=(249,247,252); MUTED=(173,155,190)
-LEAGUE_NAMES={'Default':'DEFAULT','Qualifications':'RISE','Division':'ASCEND','Pro':'PRO'}
+LEAGUE_NAMES={'Default':'DEFAULT LEAGUE','Qualifications':'DOMINION RISE','Division':'DOMINION ASCEND','Pro':'PRO LEAGUE'}
 def font(n,b=False):
  p=ROOT/'assets'/'fonts'/('Arial-Bold.ttf' if b else 'Arial.ttf'); return ImageFont.truetype(str(p),n)
 def av(url,n):

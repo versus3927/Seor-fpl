@@ -290,21 +290,55 @@ async def result_admin_access(interaction):
     return bool(interaction.guild and can_administer(interaction.user))
 
 
-async def ensure_staff_roles(guild):
-    """Resolve roles that already exist on this server without creating, renaming or editing any role."""
+async def ensure_staff_roles(guild,create_missing=False):
+    """Use existing configured roles and create only missing ones when /setup requests it."""
     result={}
+
+    staff_create_specs={
+        "owner":(0xED4245,{"administrator":True}),
+        "admin":(0xE74C3C,{"manage_guild":True,"manage_channels":True,"manage_roles":True,"manage_messages":True,"kick_members":True,"ban_members":True,"moderate_members":True,"move_members":True}),
+        "curator_qualifications":(0x22C55E,{"manage_messages":True,"move_members":True,"mute_members":True}),
+        "curator_division":(0xA855F7,{"manage_messages":True,"move_members":True,"mute_members":True}),
+        "curator_pro":(0xEF4444,{"manage_messages":True,"move_members":True,"mute_members":True}),
+    }
+    league_colors={"default":0xB8C0CC,"qualifications":0x22C55E,"division":0xA855F7,"pro":0xEF4444}
+
+    async def resolve(name,color_value=0x99AAB5,permission_values=None,allow_create=True):
+        role=find_role(guild,name)
+        if role or not create_missing or not allow_create:
+            return role
+        permissions=discord.Permissions.none()
+        for permission,value in (permission_values or {}).items():
+            setattr(permissions,permission,bool(value))
+        return await guild.create_role(
+            name=name,
+            colour=discord.Colour(color_value),
+            permissions=permissions,
+            hoist=False,
+            mentionable=False,
+            reason="DOMINION /setup: отсутствующая роль",
+        )
+
     for key,name in STAFF_ROLES.items():
-        result[key]=find_role(guild,name)
+        color_value,permission_values=staff_create_specs[key]
+        result[key]=await resolve(name,color_value,permission_values)
+
     for key,name in LEAGUE_ROLES.items():
         if key=="default":
             role=next((role for role in guild.roles if any(role_name_matches(role.name,alias) for alias in DEFAULT_LEAGUE_ALIASES)),None)
+            if not role:
+                role=await resolve(name,league_colors[key],{})
         else:
-            role=find_role(guild,name)
+            role=await resolve(name,league_colors[key],{})
         result[f"league_{key}"]=role
-    for key,(name,_color_value,_permission_values) in EXTRA_ROLE_SPECS.items():
-        result[key]=find_role(guild,name)
-    if not result.get("bot_role") and guild.me:
-        result["bot_role"]=guild.me.top_role
+
+    for key,(name,color_value,permission_values) in EXTRA_ROLE_SPECS.items():
+        # The Discord-managed bot role already exists after inviting the bot.
+        if key=="bot_role":
+            role=find_role(guild,name) or (guild.me.top_role if guild.me else None)
+        else:
+            role=await resolve(name,color_value,permission_values)
+        result[key]=role
     return result
 
 
@@ -2635,7 +2669,10 @@ async def setup(interaction:discord.Interaction):
         await g.edit(default_notifications=discord.NotificationLevel.only_mentions,reason="DOMINION FACEIT: уведомления сервера только по упоминаниям")
     except discord.Forbidden:
         await interaction.followup.send("Не удалось включить режим уведомлений «Только упоминания»: боту нужно право `Управлять сервером`.",ephemeral=True)
-    staff_roles=await ensure_staff_roles(g)
+    try:
+        staff_roles=await ensure_staff_roles(g,create_missing=True)
+    except discord.Forbidden:
+        return await interaction.followup.send("Не удалось создать недостающие роли: боту нужно право `Управлять ролями`.",ephemeral=True)
     registered_role=find_role(g,REGISTERED_ROLE_NAME)
     if not registered_role:
         try:
@@ -2898,7 +2935,7 @@ async def setup(interaction:discord.Interaction):
     await apply_pre_registration_visibility(g)
     await apply_league_channel_privacy(g)
     await apply_public_readonly_channels(g)
-    await interaction.followup.send("Готово: структура создана и права регистрации синхронизированы. Без `/setup` бот не создаёт каналы.",ephemeral=True)
+    await interaction.followup.send("Готово: структура синхронизирована. Существующие роли использованы, отсутствующие созданы. Без `/setup` бот не создаёт каналы.",ephemeral=True)
 
 
 @bot.tree.command(name="sync_default_league",description="Выдать Default League ��сем зарегистрированным")
@@ -2965,8 +3002,11 @@ async def roles_setup(interaction:discord.Interaction):
     if not can_manage_staff(interaction.user):
         return await interaction.response.send_message("Команда доступна только владельцу сервера или Owner.",ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
-    roles=await ensure_staff_roles(interaction.guild)
-    await interaction.followup.send("Роли готовы: "+", ".join(role.mention for role in roles.values()),ephemeral=True)
+    try:
+        roles=await ensure_staff_roles(interaction.guild,create_missing=True)
+    except discord.Forbidden:
+        return await interaction.followup.send("Не удалось создать недостающие роли: боту нужно право `Управлять ролями`.",ephemeral=True)
+    await interaction.followup.send("Роли готовы: "+", ".join(dict.fromkeys(role.mention for role in roles.values() if role)),ephemeral=True)
 
 
 @bot.tree.command(name="delete",description="Полный снос каналов Dominion FACEIT")

@@ -289,7 +289,7 @@ def can_use_role_panel(member):
 async def command_channel_access(interaction):
     if not interaction.guild:
         return False
-    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛��・панель-админа"]
+    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛����・панель-админа"]
     return not allowed_channels or bool(interaction.channel and interaction.channel.id in {c.id for c in allowed_channels})
 
 
@@ -781,6 +781,31 @@ class EditMatchPlayerStatsView(discord.ui.View):
         return True
 
 
+class EditOnePlayerStatsView(discord.ui.View):
+    def __init__(self,match_id,user_id,nickname,manager_id):
+        super().__init__(timeout=300)
+        self.match_id=match_id; self.user_id=user_id; self.nickname=nickname; self.manager_id=manager_id
+
+    async def interaction_check(self,interaction):
+        if interaction.user.id!=self.manager_id:
+            await interaction.response.send_message("Эта кнопка открыта другим администратором.",ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Изменить статистику игрока",emoji="✏️",style=discord.ButtonStyle.primary)
+    async def edit_player_stats(self,interaction,button):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять статистику может только администрация матчей.",ephemeral=True)
+        current={}
+        submission=db.approved_submission_for_match(interaction.guild_id,self.match_id)
+        if submission:
+            try:
+                analysis=json.loads(submission.get("analysis_json") or "{}")
+                current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==self.user_id),{})
+            except (TypeError,ValueError,json.JSONDecodeError): pass
+        await interaction.response.send_modal(EditMatchPlayerStatsModal(self.match_id,self.user_id,self.nickname,current))
+
+
 class MatchPlayerStatsSelect(discord.ui.UserSelect):
     def __init__(self,match_id):
         self.match_id=match_id
@@ -810,7 +835,8 @@ class MatchPlayerStatsSelect(discord.ui.UserSelect):
         else:
             description+=f"\n\nСтатистика матча **#{self.match_id}** не распознана."
         embed=discord.Embed(title="📊 Статистика игрока",description=description,color=discord.Color.blurple())
-        await interaction.response.send_message(embed=embed,ephemeral=True)
+        edit_view=EditOnePlayerStatsView(self.match_id,member.id,member.display_name,interaction.user.id) if can_register_games(interaction.user) else None
+        await interaction.response.send_message(embed=embed,view=edit_view,ephemeral=True)
 
 
 class MatchPlayerStatsView(discord.ui.View):
@@ -1058,7 +1084,7 @@ class DashboardPanelView(discord.ui.View):
     async def role_panel(self,i):
         if not can_use_role_panel(i.user):
             return await i.response.send_message("У тебя нет доступа к управлению ролями.",ephemeral=True)
-        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступные ��ействия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступны�� ��ействия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
@@ -3042,7 +3068,7 @@ async def on_voice_state_update(member,before,after):
         if ch and is_lobby(ch): await update_queue(ch)
     if before.channel and before.channel.id in room_owners and not before.channel.members:
         room_owners.pop(before.channel.id,None)
-        await before.channel.delete(reason="Приватная ��омната опустела")
+        await before.channel.delete(reason="��риватная ��омната опустела")
     if after.channel and after.channel.name.startswith(("🛡 CT · #","💣 T · #")):
         old_task=match_room_cleanup.pop(after.channel.id,None)
         if old_task: old_task.cancel()
@@ -3499,7 +3525,7 @@ async def match_change_result(interaction:discord.Interaction,match_id:int,score
     old_score=f"{match_data['score_a']}:{match_data['score_b']}"
     await interaction.response.defer(ephemeral=True,thinking=True)
     if not db.change_finished_match_result(match_id,score_a,score_b,reason[:300]):
-        return await interaction.followup.send("Не удалось изменить результат матча.",ephemeral=True)
+        return await interaction.followup.send("Не удалось изменить результа�� матча.",ephemeral=True)
     history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
     embed=discord.Embed(title=f"✏️ Результат матча #{match_id} изменён",description=f"Было: **{old_score}**\nСтало: **{score_a}:{score_b}**\nПричина: **{reason[:300]}**\nИзменил: {interaction.user.mention}",color=discord.Color.orange())
     if history:

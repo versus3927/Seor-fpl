@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -255,6 +256,44 @@ def approved_submission_for_match(guild_id:int,match_id:int):
     with connect() as con:
         row=con.execute("SELECT * FROM result_submissions WHERE guild_id=? AND match_id=? AND status='approved' ORDER BY id DESC LIMIT 1",(guild_id,match_id)).fetchone()
         return dict(row) if row else None
+
+def update_approved_player_stats(guild_id:int,match_id:int,user_id:int,kills:int,assists:int,deaths:int,mvp:int,editor_id:int):
+    values={"kills":max(0,int(kills)),"assists":max(0,int(assists)),"deaths":max(0,int(deaths)),"mvp":max(0,int(mvp))}
+    with connect() as con:
+        match_row=con.execute("SELECT * FROM matches WHERE id=? AND guild_id=? AND status='finished'",(match_id,guild_id)).fetchone()
+        if not match_row: return None
+        participants={int(x) for x in (match_row['team_a']+','+match_row['team_b']).split(',') if x}
+        if user_id not in participants: return None
+        submission=con.execute("SELECT * FROM result_submissions WHERE guild_id=? AND match_id=? AND status='approved' ORDER BY id DESC LIMIT 1",(guild_id,match_id)).fetchone()
+        if submission:
+            submission_id=submission['id']
+            try: analysis=json.loads(submission['analysis_json'] or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+        else:
+            analysis={"model":"manual-admin","matched_stats":[]}
+            cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url,status,reviewer_id,analysis_json) VALUES(?,?,?,?,?,?,'approved',?,?)",(
+                guild_id,match_id,editor_id,int(match_row['score_a'] or 0),int(match_row['score_b'] or 0),"manual://admin-statistics",editor_id,json.dumps(analysis,ensure_ascii=False)))
+            submission_id=cur.lastrowid
+        matched=list(analysis.get('matched_stats') or [])
+        current=next((item for item in matched if int(item.get('user_id') or 0)==user_id),None)
+        old={key:max(0,int((current or {}).get(key,0))) for key in values}
+        if current is None:
+            current={"user_id":user_id}
+            matched.append(current)
+        current.update(values)
+        analysis['matched_stats']=matched
+        analysis['recognized_players']=len([item for item in matched if item.get('user_id')])
+        deltas={key:values[key]-old[key] for key in values}
+        con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(guild_id,user_id))
+        con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(guild_id,user_id,match_row['league']))
+        for table,where,params in (
+            ('players','guild_id=? AND user_id=?',(guild_id,user_id)),
+            ('player_league_stats','guild_id=? AND user_id=? AND league=?',(guild_id,user_id,match_row['league'])),
+        ):
+            con.execute(f"UPDATE {table} SET kills=MAX(0,kills+?),assists=MAX(0,assists+?),deaths=MAX(0,deaths+?),mvp=MAX(0,mvp+?) WHERE {where}",(
+                deltas['kills'],deltas['assists'],deltas['deaths'],deltas['mvp'],*params))
+        con.execute("UPDATE result_submissions SET analysis_json=?,reviewer_id=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),editor_id,submission_id))
+        return {"old":old,"new":values,"league":match_row['league'],"submission_id":submission_id}
 
 def finish_match(match_id:int,score_a:int,score_b:int):
     with connect() as con:

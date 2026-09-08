@@ -121,9 +121,18 @@ EXTRA_ROLE_SPECS = {
     "admin_warn_1": ("admin warn 1/3", 0xFDBA74, {}),
     "admin_warn_2": ("admin warn 2/3", 0xF97316, {}),
     "admin_warn_3": ("admin warn 3/3", 0xC2410C, {}),
-    "warn_pro_1": ("1/3 pro warn", 0xFB7185, {}),
-    "warn_pro_2": ("2/3 pro warn", 0xFB7185, {}),
-    "warn_pro_3": ("3/3 pro warn", 0xEF4444, {}),
+    "warn_default_1": ("1/3 Default warn", 0xFCD34D, {}),
+    "warn_default_2": ("2/3 Default warn", 0xF59E0B, {}),
+    "warn_default_3": ("3/3 Default warn", 0xD97706, {}),
+    "warn_rise_1": ("1/3 Rise warn", 0xA78BFA, {}),
+    "warn_rise_2": ("2/3 Rise warn", 0x8B5CF6, {}),
+    "warn_rise_3": ("3/3 Rise warn", 0x7C3AED, {}),
+    "warn_ascend_1": ("1/3 Ascend warn", 0x38BDF8, {}),
+    "warn_ascend_2": ("2/3 Ascend warn", 0x0EA5E9, {}),
+    "warn_ascend_3": ("3/3 Ascend warn", 0x0369A1, {}),
+    "warn_pro_1": ("1/3 Pro warn", 0xFB7185, {}),
+    "warn_pro_2": ("2/3 Pro warn", 0xF43F5E, {}),
+    "warn_pro_3": ("3/3 Pro warn", 0xEF4444, {}),
 }
 LEGACY_UNUSED_ROLE_NAMES=(
     "1/3 division warn","2/3 division warn","3/3 division warn","test division",
@@ -280,7 +289,7 @@ def can_use_role_panel(member):
 async def command_channel_access(interaction):
     if not interaction.guild:
         return False
-    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛️・панель-админа"]
+    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛��・панель-админа"]
     return not allowed_channels or bool(interaction.channel and interaction.channel.id in {c.id for c in allowed_channels})
 
 
@@ -674,29 +683,102 @@ def registered_match_view(match_id):
     view.add_item(discord.ui.Button(label="Подтвердить результат",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"registeredmatch:confirm:{match_id}"))
     view.add_item(discord.ui.Button(label="Счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:score:{match_id}"))
     view.add_item(discord.ui.Button(label="Статистика",emoji="📊",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:stats:{match_id}"))
+    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
     return view
 
 
-def registered_match_stats_embed(guild_id,match_id):
-    submission=db.approved_submission_for_match(guild_id,match_id)
-    if not submission:
-        return discord.Embed(title=f"📊 Статистика матча #{match_id}",description="Для этого матча нет подтверждённой статистики со скриншота.",color=discord.Color.orange())
-    try:
-        analysis=json.loads(submission.get("analysis_json") or "{}")
-    except (TypeError,ValueError,json.JSONDecodeError):
-        analysis={}
+def registered_match_stats_embed(guild,match_id):
+    match_data=guild_match(guild.id,match_id)
+    if not match_data:
+        return discord.Embed(title=f"📊 Статистика матча #{match_id}",description="Матч не найден.",color=discord.Color.red())
+    submission=db.approved_submission_for_match(guild.id,match_id)
+    analysis={}
+    if submission:
+        try: analysis=json.loads(submission.get("analysis_json") or "{}")
+        except (TypeError,ValueError,json.JSONDecodeError): pass
+    stats_by_id={int(item.get("user_id")):item for item in analysis.get("matched_stats",[]) if item.get("user_id")}
+    team_a={int(value) for value in match_data["team_a"].split(",") if value}
+    player_ids=[int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value]
     lines=[]
-    for item in analysis.get("matched_stats",[]):
-        user_id=item.get("user_id")
-        if not user_id: continue
-        lines.append(
-            f"<@{user_id}> — **{int(item.get('kills',0))}/{int(item.get('assists',0))}/{int(item.get('deaths',0))}** · MVP **{int(item.get('mvp',0))}**"
-        )
+    for user_id in player_ids:
+        member=guild.get_member(user_id)
+        profile=db.player(guild.id,user_id)
+        nickname=(member.display_name if member else None) or profile.get("nickname") or f"Игрок {user_id}"
+        nickname=discord.utils.escape_markdown(str(nickname))
+        item=stats_by_id.get(user_id,{})
+        side="CT" if user_id in team_a else "T"
+        lines.append(f"**{side} · {nickname}** (<@{user_id}>) — **{int(item.get('kills',0))}/{int(item.get('assists',0))}/{int(item.get('deaths',0))}** · MVP **{int(item.get('mvp',0))}**")
     return discord.Embed(
         title=f"📊 Статистика матча #{match_id}",
-        description="K/A/D и MVP\n\n"+("\n".join(lines)[:3900] if lines else "Статистика игроков не распознана."),
+        description="Ник · K/A/D · MVP\n\n"+("\n".join(lines)[:3900] if lines else "Игроки матча не найдены."),
         color=discord.Color.blurple(),
     )
+
+
+class EditMatchPlayerStatsModal(discord.ui.Modal):
+    def __init__(self,match_id,user_id,nickname,current):
+        super().__init__(title=f"Статистика: {nickname}"[:45])
+        self.match_id=match_id; self.user_id=user_id; self.nickname=nickname
+        self.kills=discord.ui.TextInput(label="Убийства",default=str(int(current.get("kills",0))),max_length=3)
+        self.assists=discord.ui.TextInput(label="Ассисты",default=str(int(current.get("assists",0))),max_length=3)
+        self.deaths=discord.ui.TextInput(label="Смерти",default=str(int(current.get("deaths",0))),max_length=3)
+        self.mvp=discord.ui.TextInput(label="MVP",default=str(int(current.get("mvp",0))),max_length=3)
+        for field in (self.kills,self.assists,self.deaths,self.mvp): self.add_item(field)
+
+    async def on_submit(self,interaction):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять статистику может только администрация матчей.",ephemeral=True)
+        raw=[self.kills.value,self.assists.value,self.deaths.value,self.mvp.value]
+        if any(not value.strip().isdigit() for value in raw):
+            return await interaction.response.send_message("K/A/D и MVP должны быть целыми числами от 0 до 999.",ephemeral=True)
+        values=[int(value) for value in raw]
+        if any(value>999 for value in values):
+            return await interaction.response.send_message("Максимальное значение — 999.",ephemeral=True)
+        result=db.update_approved_player_stats(interaction.guild_id,self.match_id,self.user_id,values[0],values[1],values[2],values[3],interaction.user.id)
+        if not result:
+            return await interaction.response.send_message("Не удалось изменить статистику: матч не завершён или игрок не участвовал в нём.",ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Статистика **{discord.utils.escape_markdown(self.nickname)}** в матче **#{self.match_id}** обновлена: **{values[0]}/{values[1]}/{values[2]}**, MVP **{values[3]}**. Учтена только в лиге **{league_display_name(result['league'])}**.",
+            ephemeral=True,
+        )
+
+
+class EditMatchPlayerStatsSelect(discord.ui.UserSelect):
+    def __init__(self,match_id):
+        self.match_id=match_id
+        super().__init__(placeholder="Выбери игрока для изменения",min_values=1,max_values=1,row=0)
+
+    async def callback(self,interaction):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять статистику может только администрация матчей.",ephemeral=True)
+        member=self.values[0]
+        match_data=guild_match(interaction.guild_id,self.match_id)
+        if not match_data or match_data["status"]!="finished":
+            return await interaction.response.send_message("Изменять статистику можно только у завершённого матча.",ephemeral=True)
+        participants={int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value}
+        if member.id not in participants:
+            return await interaction.response.send_message("Этот участник не играл в матче.",ephemeral=True)
+        current={}
+        submission=db.approved_submission_for_match(interaction.guild_id,self.match_id)
+        if submission:
+            try:
+                analysis=json.loads(submission.get("analysis_json") or "{}")
+                current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==member.id),{})
+            except (TypeError,ValueError,json.JSONDecodeError): pass
+        await interaction.response.send_modal(EditMatchPlayerStatsModal(self.match_id,member.id,member.display_name,current))
+
+
+class EditMatchPlayerStatsView(discord.ui.View):
+    def __init__(self,match_id,manager_id):
+        super().__init__(timeout=300)
+        self.manager_id=manager_id
+        self.add_item(EditMatchPlayerStatsSelect(match_id))
+
+    async def interaction_check(self,interaction):
+        if interaction.user.id!=self.manager_id:
+            await interaction.response.send_message("Эта форма открыта другим администратором.",ephemeral=True)
+            return False
+        return True
 
 
 class MatchPlayerStatsSelect(discord.ui.UserSelect):
@@ -976,14 +1058,14 @@ class DashboardPanelView(discord.ui.View):
     async def role_panel(self,i):
         if not can_use_role_panel(i.user):
             return await i.response.send_message("У тебя нет доступа к управлению ролями.",ephemeral=True)
-        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступные действия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступные ��ействия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
             return await i.response.send_message("Создавать роли может только владелец сервера или Owner.",ephemeral=True)
         await i.response.defer(ephemeral=True,thinking=True)
         await ensure_staff_roles(i.guild)
-        await i.followup.send("Служебные роли созданы и синхронизированы.",ephemeral=True)
+        await i.followup.send("Служебные ��оли созданы и синхронизированы.",ephemeral=True)
 
 
 class StaffMemberSelect(discord.ui.UserSelect):
@@ -1223,7 +1305,7 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
         if not member: return await interaction.response.send_message("Участник не найден.",ephemeral=True)
         action=str(self.action).strip().lower(); reason=str(self.reason).strip()
         if action not in {"timeout","kick","ban"}:
-            return await interaction.response.send_message("Действие: `timeout`, `kick` или `ban`. Для варна используй выбор типа варна в панели.",ephemeral=True)
+            return await interaction.response.send_message("Дейст��ие: `timeout`, `kick` или `ban`. Для варна используй выбор типа варна в панели.",ephemeral=True)
         if action in {"kick","ban"} and not can_administer(interaction.user):
             return await interaction.response.send_message("Kick и ban доступны только старшей администрации.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
@@ -1244,11 +1326,16 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
 WARN_TYPE_LABELS={
     "anticheat":"Anticheat warn",
     "default":"Default warn",
+    "rise":"Rise warn",
+    "ascend":"Ascend warn",
     "pro":"Pro warn",
     "all":"ALL warn",
     "admin":"Admin warn",
 }
 WARN_TIER_KEYS={
+    "default":("warn_default_1","warn_default_2","warn_default_3"),
+    "rise":("warn_rise_1","warn_rise_2","warn_rise_3"),
+    "ascend":("warn_ascend_1","warn_ascend_2","warn_ascend_3"),
     "pro":("warn_pro_1","warn_pro_2","warn_pro_3"),
     "anticheat":("anticheat_warn_1","anticheat_warn_2","anticheat_warn_3"),
     "all":("all_warn_1","all_warn_2","all_warn_3"),
@@ -1256,10 +1343,15 @@ WARN_TIER_KEYS={
 }
 
 
-def find_default_warn_roles(guild):
+async def ensure_warn_tier_roles(guild,warn_type):
     roles=[]
-    for level in (1,2,3):
-        role=next((r for r in guild.roles if normalized_role_name(r.name).startswith(f"{level}/3") and ("default" in normalized_role_name(r.name) or "деф" in normalized_role_name(r.name)) and ("warn" in normalized_role_name(r.name) or "варн" in normalized_role_name(r.name))),None)
+    for key in WARN_TIER_KEYS[warn_type]:
+        name,role_color,permission_map=EXTRA_ROLE_SPECS[key]
+        role=find_role(guild,name)
+        if not role:
+            permissions=discord.Permissions.none()
+            for permission,value in permission_map.items(): setattr(permissions,permission,bool(value))
+            role=await guild.create_role(name=name,colour=discord.Colour(role_color),permissions=permissions,reason=f"DOMINION: автосоздание {WARN_TYPE_LABELS[warn_type]}")
         roles.append(role)
     return roles
 
@@ -1312,14 +1404,11 @@ class WarnReasonModal(discord.ui.Modal,title="Выдать варн"):
         if not can_issue_warn_type(interaction.user,self.warn_type):
             return await interaction.response.send_message("У тебя нет права выдавать этот тип варна.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
-        roles=await ensure_staff_roles(interaction.guild)
         role=None; old_roles=[]
-        if self.warn_type=="default":
-            tier_roles=find_default_warn_roles(interaction.guild)
-        else:
-            tier_roles=[roles.get(key) for key in WARN_TIER_KEYS[self.warn_type]]
-        if not all(tier_roles):
-            return await interaction.followup.send("Не найдены р��ли 1/3, 2/3 и 3/3 для этого варна. Проверь их названия на сервере.",ephemeral=True)
+        try:
+            tier_roles=await ensure_warn_tier_roles(interaction.guild,self.warn_type)
+        except discord.Forbidden:
+            return await interaction.followup.send("Ролей варна не было на сервере, но бот не смог создать их. Выдай боту право `Управлять ролями`.",ephemeral=True)
         current=max((index for index,item in enumerate(tier_roles) if item in member.roles),default=-1)
         next_index=min(current+1,2)
         if current==2:
@@ -1394,10 +1483,8 @@ def warning_roles_for_type(guild,warn_type,roles):
             if "warn" in name or "варн" in name:
                 result.append(role)
         return result
-    if warn_type=="default":
-        return [role for role in find_default_warn_roles(guild) if role]
     if warn_type in WARN_TIER_KEYS:
-        return [roles.get(key) for key in WARN_TIER_KEYS[warn_type] if roles.get(key)]
+        return [roles.get(key) or find_role(guild,EXTRA_ROLE_SPECS[key][0]) for key in WARN_TIER_KEYS[warn_type] if roles.get(key) or find_role(guild,EXTRA_ROLE_SPECS[key][0])]
     return []
 
 
@@ -1507,7 +1594,7 @@ class RemoveSanctionView(discord.ui.View):
             try:
                 await member.remove_roles(*removable,reason=f"DOMINION FACEIT warnings removed by {interaction.user}")
             except discord.Forbidden:
-                return await interaction.followup.send("Не удалось снять роли варнов. Подними роль бота выше них.",ephemeral=True)
+                return await interaction.followup.send("Не удалось снять роли варн��в. Подними роль бота выше них.",ephemeral=True)
             removed_text=", ".join(role.name for role in removable)
         removal_description=f"Участник: {member.mention}\nСнято: **{removed_text}**\nАдминистратор: {interaction.user.mention}"
         await send_staff_log(interaction.guild,"общий-журнал","♻️ Санкция снята",removal_description,discord.Color.green())
@@ -1531,7 +1618,7 @@ class MatchAdminModal(discord.ui.Modal,title="Управление матчем"
         if not match: return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         action=str(self.action).strip().lower()
         if action=="info":
-            return await interaction.response.send_message(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{match['map']}**\nСтатус: **{match['status']}**\nСчёт: **{match['score_a']}:{match['score_b']}**",color=color()),ephemeral=True)
+            return await interaction.response.send_message(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{match['map']}**\nСтатус: **{match['status']}**\nСчёт: **{match['score_a']}:{match['score_b']}**",color=color()),view=registered_match_view(match_id),ephemeral=True)
         if action!="finish": return await interaction.response.send_message("Действие: `info` или `finish`.",ephemeral=True)
         try:
             a,b=[int(x) for x in str(self.score).replace("-",":").split(":",1)]
@@ -1764,7 +1851,7 @@ async def ensure_staff_application_system(guild):
         if application_type=="ticket_support" and roles.get("ticket_admin"):
             overwrites[roles["ticket_admin"]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
         if not channel:
-            channel=await guild.create_text_channel(channel_name,category=staff_category,overwrites=overwrites,reason="DOMINION /setup: заявки на роли")
+            channel=await guild.create_text_channel(channel_name,category=staff_category,overwrites=overwrites,reason="DOMINION /setup: ��аявки на роли")
         else:
             for target,overwrite in overwrites.items():
                 await channel.set_permissions(target,overwrite=overwrite)
@@ -2808,7 +2895,7 @@ async def on_interaction(interaction):
     if cid.startswith("party:accept:") or cid.startswith("party:decline:"):
         _,action,party_id,target_id=cid.split(":")
         if interaction.user.id!=int(target_id):
-            return await interaction.response.send_message("Это приглашение предназначено другому участнику.",ephemeral=True)
+            return await interaction.response.send_message("Это приглаш��ние предназначено другому участнику.",ephemeral=True)
         if action=="decline":
             return await interaction.response.edit_message(content="❌ Приглашение отклонено.",embed=None,view=None)
         result=db.add_party_member(interaction.guild_id,int(party_id),interaction.user.id)
@@ -2834,9 +2921,20 @@ async def on_interaction(interaction):
             return await interaction.response.send_message(f"🔢 Счёт матча **#{match_id}**: **{score}**.",ephemeral=True)
         if action=="stats":
             return await interaction.response.send_message(
-                content="Выбери участника матча — статистику увидишь только ты.",
-                embed=registered_match_stats_embed(interaction.guild_id,match_id),
+                content="Статистика всех игроков с никами. Выбери участника для подробностей.",
+                embed=registered_match_stats_embed(interaction.guild,match_id),
                 view=MatchPlayerStatsView(match_id),
+                ephemeral=True,
+            )
+        if action=="editstats":
+            if not can_register_games(interaction.user):
+                return await interaction.response.send_message("Изменять статистику может только администрация матчей.",ephemeral=True)
+            if match_data["status"]!="finished":
+                return await interaction.response.send_message("Изменять статистику можно только у завершённого матча.",ephemeral=True)
+            return await interaction.response.send_message(
+                content="Выбери игрока, затем введи K/A/D и MVP.",
+                embed=registered_match_stats_embed(interaction.guild,match_id),
+                view=EditMatchPlayerStatsView(match_id,interaction.user.id),
                 ephemeral=True,
             )
         return await interaction.response.send_message("Неизвестное действие.",ephemeral=True)
@@ -2851,7 +2949,7 @@ async def on_interaction(interaction):
         host_profile=db.player(interaction.guild_id,match_data["host_id"])
         host_game_id=str(host_profile.get("game_id") or "").strip()
         if not host_game_id:
-            return await interaction.response.send_message("У хоста не указан Standoff 2 ID. Хосту нужно добавить его через регистрацию или `/set_game_id`.",ephemeral=True)
+            return await interaction.response.send_message("У хоста не ��казан Standoff 2 ID. Хосту нужно добавить его через регистрацию или `/set_game_id`.",ephemeral=True)
         host_member=interaction.guild.get_member(match_data["host_id"])
         host_name=host_member.mention if host_member else (host_profile.get("nickname") or f"игрок {match_data['host_id']}")
         return await interaction.response.send_message(f"🆔 Standoff 2 ID хоста {host_name}: **{host_game_id}**",ephemeral=True)
@@ -2944,7 +3042,7 @@ async def on_voice_state_update(member,before,after):
         if ch and is_lobby(ch): await update_queue(ch)
     if before.channel and before.channel.id in room_owners and not before.channel.members:
         room_owners.pop(before.channel.id,None)
-        await before.channel.delete(reason="Приватная комната опустела")
+        await before.channel.delete(reason="Приватная ��омната опустела")
     if after.channel and after.channel.name.startswith(("🛡 CT · #","💣 T · #")):
         old_task=match_room_cleanup.pop(after.channel.id,None)
         if old_task: old_task.cancel()
@@ -3033,8 +3131,13 @@ async def setup(interaction:discord.Interaction):
     try:
         anticheat_warn_role,created_anticheat=await ensure_requested_role("Anticheat warn",0x2563EB,{})
         ticket_support_role,created_ticket_support=await ensure_requested_role("Ticket Support",0x8B5CF6,{})
+        existing_warn_ids={role.id for role in guild.roles}
+        ensured_warn_roles=[]
+        for warn_type in WARN_TIER_KEYS:
+            ensured_warn_roles.extend(await ensure_warn_tier_roles(guild,warn_type))
+        created_warn_count=sum(role.id not in existing_warn_ids for role in ensured_warn_roles)
     except discord.Forbidden:
-        return await interaction.followup.send("Боту нужно право `Управлять ролями`, чтобы создать Anticheat warn и Ticket Support.",ephemeral=True)
+        return await interaction.followup.send("Боту нужно право `Управлять ролями`, чтобы автоматически создать отсутствующие служебные роли и роли варнов.",ephemeral=True)
 
     roles=await ensure_staff_roles(guild,create_missing=False)
     roles["anticheat_warn"]=anticheat_warn_role
@@ -3111,7 +3214,7 @@ async def setup(interaction:discord.Interaction):
     )
     panel_embed.add_field(name="🎮 Games Admin",value="Только регистрация, изменение и отмена результатов матчей.",inline=False)
     panel_embed.add_field(name="🎫 Ticket Support",value="Только просмотр, ответы и закрытие тикетов.",inline=False)
-    panel_embed.add_field(name="🛡️ Anticheat warn",value=f"Кнопка выдаёт роль {anticheat_warn_role.mention}.",inline=False)
+    panel_embed.add_field(name="🛡️ Варны",value=f"Доступны Default, Rise, Ascend, Pro, Anticheat, Admin и ALL warn. Отсутствующие роли 1/3–3/3 создаются автоматически. Отдельная кнопка выдаёт {anticheat_warn_role.mention}.",inline=False)
 
     panel_message=None
     try:
@@ -3130,8 +3233,9 @@ async def setup(interaction:discord.Interaction):
     if created_anticheat: created.append("Anticheat warn")
     if created_ticket_support: created.append("Ticket Support")
     created_text=(" Созданы роли: **"+", ".join(created)+"**.") if created else ""
+    warn_text=f" Создано отсутствующих ролей варнов: **{created_warn_count}**."
     await interaction.followup.send(
-        f"Готово. Панель восстановлена, профильные права обновлены ({changed} изменений).{created_text} Другие категории, каналы, сообщения и права `/setup` не трогал.",
+        f"Готово. Панель восстановлена, профильные права обновлены ({changed} изменений).{created_text}{warn_text} Другие категории, каналы, сообщения и права `/setup` не трогал.",
         ephemeral=True,
     )
 
@@ -3350,7 +3454,7 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
         return await interaction.response.send_message("Команда доступна только владельцу и администрации DOMINION.",ephemeral=True)
     nickname=nickname.strip()
     if not 2 <= len(nickname) <= 32:
-        return await interaction.response.send_message("Ник должен содержать от 2 до 32 символов.",ephemeral=True)
+        return await interaction.response.send_message("��ик должен содержать от 2 до 32 символов.",ephemeral=True)
     if member.id==interaction.guild.owner_id:
         return await interaction.response.send_message("Discord не разрешает боту менять ник владельца сервера.",ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)

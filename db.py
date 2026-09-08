@@ -47,6 +47,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS party_members(
           guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, party_id INTEGER NOT NULL,
           PRIMARY KEY(guild_id,user_id));
+        CREATE TABLE IF NOT EXISTS player_league_stats(
+          guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, league TEXT NOT NULL,
+          games INTEGER NOT NULL DEFAULT 0, wins INTEGER NOT NULL DEFAULT 0,
+          losses INTEGER NOT NULL DEFAULT 0, kills INTEGER NOT NULL DEFAULT 0,
+          deaths INTEGER NOT NULL DEFAULT 0, assists INTEGER NOT NULL DEFAULT 0,
+          mvp INTEGER NOT NULL DEFAULT 0, points INTEGER NOT NULL DEFAULT 1000,
+          PRIMARY KEY(guild_id,user_id,league));
         """)
         player_columns={row[1] for row in con.execute("PRAGMA table_info(players)")}
         if "assists" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN assists INTEGER NOT NULL DEFAULT 0")
@@ -171,6 +178,17 @@ def leaders(guild_id:int, limit:int=10):
     with connect() as con:
         return [dict(x) for x in con.execute("SELECT * FROM players WHERE guild_id=? ORDER BY points DESC,wins DESC LIMIT ?",(guild_id,limit))]
 
+def league_leaders(guild_id:int,league:str,limit:int=10):
+    with connect() as con:
+        rows=con.execute("""
+            SELECT s.*,p.game_id,p.nickname
+            FROM player_league_stats s
+            LEFT JOIN players p ON p.guild_id=s.guild_id AND p.user_id=s.user_id
+            WHERE s.guild_id=? AND s.league=? AND s.games>0
+            ORDER BY s.points DESC,s.wins DESC LIMIT ?
+        """,(guild_id,league,limit)).fetchall()
+        return [dict(row) for row in rows]
+
 def create_match(guild_id,league,map_name,host_id,team_a,team_b):
     with connect() as con:
         cur=con.execute("INSERT INTO matches(guild_id,league,map,host_id,team_a,team_b) VALUES(?,?,?,?,?,?)",(guild_id,league,map_name,host_id,','.join(map(str,team_a)),','.join(map(str,team_b))))
@@ -204,22 +222,34 @@ def recent_matches(guild_id:int,limit:int=10):
     with connect() as con:
         return [dict(x) for x in con.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit))]
 
-def apply_player_stats(guild_id:int,stats:list[dict]):
+def league_player(guild_id:int,user_id:int,league:str):
     with connect() as con:
-        for item in stats:
-            user_id=item.get("user_id")
-            if not user_id: continue
-            con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(guild_id,int(user_id)))
-            con.execute("UPDATE players SET kills=kills+?,deaths=deaths+?,assists=assists+?,mvp=mvp+? WHERE guild_id=? AND user_id=?",(
-                max(0,int(item.get("kills",0))),max(0,int(item.get("deaths",0))),max(0,int(item.get("assists",0))),max(0,int(item.get("mvp",0))),guild_id,int(user_id)))
+        con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(guild_id,user_id,league))
+        return dict(con.execute("SELECT * FROM player_league_stats WHERE guild_id=? AND user_id=? AND league=?",(guild_id,user_id,league)).fetchone())
 
-def reverse_player_stats(guild_id:int,stats:list[dict]):
+def apply_player_stats(guild_id:int,stats:list[dict],league:str|None=None):
     with connect() as con:
         for item in stats:
             user_id=item.get("user_id")
             if not user_id: continue
-            con.execute("UPDATE players SET kills=MAX(0,kills-?),deaths=MAX(0,deaths-?),assists=MAX(0,assists-?),mvp=MAX(0,mvp-?) WHERE guild_id=? AND user_id=?",(
-                max(0,int(item.get("kills",0))),max(0,int(item.get("deaths",0))),max(0,int(item.get("assists",0))),max(0,int(item.get("mvp",0))),guild_id,int(user_id)))
+            kills=max(0,int(item.get("kills",0))); deaths=max(0,int(item.get("deaths",0)))
+            assists=max(0,int(item.get("assists",0))); mvp=max(0,int(item.get("mvp",0)))
+            con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(guild_id,int(user_id)))
+            con.execute("UPDATE players SET kills=kills+?,deaths=deaths+?,assists=assists+?,mvp=mvp+? WHERE guild_id=? AND user_id=?",(kills,deaths,assists,mvp,guild_id,int(user_id)))
+            if league:
+                con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(guild_id,int(user_id),league))
+                con.execute("UPDATE player_league_stats SET kills=kills+?,deaths=deaths+?,assists=assists+?,mvp=mvp+? WHERE guild_id=? AND user_id=? AND league=?",(kills,deaths,assists,mvp,guild_id,int(user_id),league))
+
+def reverse_player_stats(guild_id:int,stats:list[dict],league:str|None=None):
+    with connect() as con:
+        for item in stats:
+            user_id=item.get("user_id")
+            if not user_id: continue
+            kills=max(0,int(item.get("kills",0))); deaths=max(0,int(item.get("deaths",0)))
+            assists=max(0,int(item.get("assists",0))); mvp=max(0,int(item.get("mvp",0)))
+            con.execute("UPDATE players SET kills=MAX(0,kills-?),deaths=MAX(0,deaths-?),assists=MAX(0,assists-?),mvp=MAX(0,mvp-?) WHERE guild_id=? AND user_id=?",(kills,deaths,assists,mvp,guild_id,int(user_id)))
+            if league:
+                con.execute("UPDATE player_league_stats SET kills=MAX(0,kills-?),deaths=MAX(0,deaths-?),assists=MAX(0,assists-?),mvp=MAX(0,mvp-?) WHERE guild_id=? AND user_id=? AND league=?",(kills,deaths,assists,mvp,guild_id,int(user_id),league))
 
 def approved_submission_for_match(guild_id:int,match_id:int):
     with connect() as con:
@@ -232,11 +262,17 @@ def finish_match(match_id:int,score_a:int,score_b:int):
         if not m: return False
         a=[int(x) for x in m['team_a'].split(',')]; b=[int(x) for x in m['team_b'].split(',')]
         won_a=score_a>score_b
-        for uid in a+b: con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(m['guild_id'],uid))
+        for uid in a+b:
+            con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(m['guild_id'],uid))
+            con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(m['guild_id'],uid,m['league']))
         for uid in a:
-            con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(1 if won_a else 0,0 if won_a else 1,25 if won_a else -18,m['guild_id'],uid))
+            values=(1 if won_a else 0,0 if won_a else 1,25 if won_a else -18)
+            con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+            con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         for uid in b:
-            con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(0 if won_a else 1,1 if won_a else 0,-18 if won_a else 25,m['guild_id'],uid))
+            values=(0 if won_a else 1,1 if won_a else 0,-18 if won_a else 25)
+            con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+            con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         con.execute("UPDATE matches SET score_a=?,score_b=?,status='finished' WHERE id=?",(score_a,score_b,match_id))
         return True
 
@@ -250,11 +286,13 @@ def change_finished_match_result(match_id:int,score_a:int,score_b:int,reason:str
         new_won_a=int(score_a)>int(score_b)
         if old_won_a!=new_won_a:
             for uid in team_a:
-                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
-                    1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,-43 if old_won_a else 43,m['guild_id'],uid))
+                values=(1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,-43 if old_won_a else 43)
+                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+                con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
             for uid in team_b:
-                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
-                    0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,43 if old_won_a else -43,m['guild_id'],uid))
+                values=(0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,43 if old_won_a else -43)
+                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+                con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         con.execute("UPDATE matches SET score_a=?,score_b=? WHERE id=?",(score_a,score_b,match_id))
         con.execute("UPDATE result_submissions SET score_a=?,score_b=?,reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(score_a,score_b,reason,match_id))
         return True
@@ -267,11 +305,13 @@ def cancel_finished_match(match_id:int,reason:str|None=None):
         team_b=[int(x) for x in m['team_b'].split(',') if x]
         won_a=int(m['score_a'])>int(m['score_b'])
         for uid in team_a:
-            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
-                1 if won_a else 0,0 if won_a else 1,-25 if won_a else 18,m['guild_id'],uid))
+            values=(1 if won_a else 0,0 if won_a else 1,-25 if won_a else 18)
+            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+            con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         for uid in team_b:
-            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
-                0 if won_a else 1,1 if won_a else 0,18 if won_a else -25,m['guild_id'],uid))
+            values=(0 if won_a else 1,1 if won_a else 0,18 if won_a else -25)
+            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
+            con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         con.execute("UPDATE matches SET score_a=NULL,score_b=NULL,status='cancelled' WHERE id=?",(match_id,))
         con.execute("UPDATE result_submissions SET status='cancelled',reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(reason,match_id))
         return True

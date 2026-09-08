@@ -213,6 +213,19 @@ def apply_player_stats(guild_id:int,stats:list[dict]):
             con.execute("UPDATE players SET kills=kills+?,deaths=deaths+?,assists=assists+?,mvp=mvp+? WHERE guild_id=? AND user_id=?",(
                 max(0,int(item.get("kills",0))),max(0,int(item.get("deaths",0))),max(0,int(item.get("assists",0))),max(0,int(item.get("mvp",0))),guild_id,int(user_id)))
 
+def reverse_player_stats(guild_id:int,stats:list[dict]):
+    with connect() as con:
+        for item in stats:
+            user_id=item.get("user_id")
+            if not user_id: continue
+            con.execute("UPDATE players SET kills=MAX(0,kills-?),deaths=MAX(0,deaths-?),assists=MAX(0,assists-?),mvp=MAX(0,mvp-?) WHERE guild_id=? AND user_id=?",(
+                max(0,int(item.get("kills",0))),max(0,int(item.get("deaths",0))),max(0,int(item.get("assists",0))),max(0,int(item.get("mvp",0))),guild_id,int(user_id)))
+
+def approved_submission_for_match(guild_id:int,match_id:int):
+    with connect() as con:
+        row=con.execute("SELECT * FROM result_submissions WHERE guild_id=? AND match_id=? AND status='approved' ORDER BY id DESC LIMIT 1",(guild_id,match_id)).fetchone()
+        return dict(row) if row else None
+
 def finish_match(match_id:int,score_a:int,score_b:int):
     with connect() as con:
         m=con.execute("SELECT * FROM matches WHERE id=? AND status!='finished'",(match_id,)).fetchone()
@@ -225,4 +238,40 @@ def finish_match(match_id:int,score_a:int,score_b:int):
         for uid in b:
             con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(0 if won_a else 1,1 if won_a else 0,-18 if won_a else 25,m['guild_id'],uid))
         con.execute("UPDATE matches SET score_a=?,score_b=?,status='finished' WHERE id=?",(score_a,score_b,match_id))
+        return True
+
+def change_finished_match_result(match_id:int,score_a:int,score_b:int,reason:str|None=None):
+    with connect() as con:
+        m=con.execute("SELECT * FROM matches WHERE id=? AND status='finished'",(match_id,)).fetchone()
+        if not m: return False
+        team_a=[int(x) for x in m['team_a'].split(',') if x]
+        team_b=[int(x) for x in m['team_b'].split(',') if x]
+        old_won_a=int(m['score_a'])>int(m['score_b'])
+        new_won_a=int(score_a)>int(score_b)
+        if old_won_a!=new_won_a:
+            for uid in team_a:
+                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
+                    1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,-43 if old_won_a else 43,m['guild_id'],uid))
+            for uid in team_b:
+                con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
+                    0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,43 if old_won_a else -43,m['guild_id'],uid))
+        con.execute("UPDATE matches SET score_a=?,score_b=? WHERE id=?",(score_a,score_b,match_id))
+        con.execute("UPDATE result_submissions SET score_a=?,score_b=?,reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(score_a,score_b,reason,match_id))
+        return True
+
+def cancel_finished_match(match_id:int,reason:str|None=None):
+    with connect() as con:
+        m=con.execute("SELECT * FROM matches WHERE id=? AND status='finished'",(match_id,)).fetchone()
+        if not m: return False
+        team_a=[int(x) for x in m['team_a'].split(',') if x]
+        team_b=[int(x) for x in m['team_b'].split(',') if x]
+        won_a=int(m['score_a'])>int(m['score_b'])
+        for uid in team_a:
+            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
+                1 if won_a else 0,0 if won_a else 1,-25 if won_a else 18,m['guild_id'],uid))
+        for uid in team_b:
+            con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(
+                0 if won_a else 1,1 if won_a else 0,18 if won_a else -25,m['guild_id'],uid))
+        con.execute("UPDATE matches SET score_a=NULL,score_b=NULL,status='cancelled' WHERE id=?",(match_id,))
+        con.execute("UPDATE result_submissions SET status='cancelled',reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(reason,match_id))
         return True

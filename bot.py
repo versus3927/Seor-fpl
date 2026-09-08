@@ -663,6 +663,36 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
     return e
 
 
+def registered_match_view(match_id):
+    view=discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Подтвердить результат",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"registeredmatch:confirm:{match_id}"))
+    view.add_item(discord.ui.Button(label="Счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:score:{match_id}"))
+    view.add_item(discord.ui.Button(label="Статистика",emoji="📊",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:stats:{match_id}"))
+    return view
+
+
+def registered_match_stats_embed(guild_id,match_id):
+    submission=db.approved_submission_for_match(guild_id,match_id)
+    if not submission:
+        return discord.Embed(title=f"📊 Статистика матча #{match_id}",description="Для этого матча нет подтверждённой статистики со скриншота.",color=discord.Color.orange())
+    try:
+        analysis=json.loads(submission.get("analysis_json") or "{}")
+    except (TypeError,ValueError,json.JSONDecodeError):
+        analysis={}
+    lines=[]
+    for item in analysis.get("matched_stats",[]):
+        user_id=item.get("user_id")
+        if not user_id: continue
+        lines.append(
+            f"<@{user_id}> — **{int(item.get('kills',0))}/{int(item.get('assists',0))}/{int(item.get('deaths',0))}** · MVP **{int(item.get('mvp',0))}**"
+        )
+    return discord.Embed(
+        title=f"📊 Статистика матча #{match_id}",
+        description="K/A/D и MVP\n\n"+("\n".join(lines)[:3900] if lines else "Статистика игроков не распознана."),
+        color=discord.Color.blurple(),
+    )
+
+
 def guild_match(guild_id,match_id):
     match=db.match(match_id)
     if not match or int(match.get("guild_id",0))!=int(guild_id):
@@ -2699,6 +2729,26 @@ async def on_interaction(interaction):
         if result!="ok": return await interaction.response.send_message(messages.get(result,"Не удалось вступить в пати."),ephemeral=True)
         party=db.party_for_user(interaction.guild_id,interaction.user.id)
         return await interaction.response.edit_message(content=f"✅ {interaction.user.mention} вступил в пати!",embed=party_embed(party),view=None)
+    if cid.startswith("registeredmatch:"):
+        try:
+            _,action,match_id_raw=cid.split(":",2)
+            match_id=int(match_id_raw)
+        except (ValueError,TypeError):
+            return await interaction.response.send_message("Некорректная кнопка матча.",ephemeral=True)
+        match_data=guild_match(interaction.guild_id,match_id)
+        if not match_data:
+            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+        if action=="confirm":
+            if match_data["status"]=="finished":
+                return await interaction.response.send_message(f"✅ Результат матча **#{match_id}** подтверждён: **{match_data['score_a']}:{match_data['score_b']}**.",ephemeral=True)
+            return await interaction.response.send_message(f"Статус матча **#{match_id}**: **{match_data['status']}**.",ephemeral=True)
+        if action=="score":
+            score=f"{match_data['score_a']}:{match_data['score_b']}" if match_data["score_a"] is not None else "не зарегистрирован"
+            return await interaction.response.send_message(f"🔢 Счёт матча **#{match_id}**: **{score}**.",ephemeral=True)
+        if action=="stats":
+            return await interaction.response.send_message(embed=registered_match_stats_embed(interaction.guild_id,match_id),ephemeral=True)
+        return await interaction.response.send_message("Неизвестное действие.",ephemeral=True)
+
     if cid.startswith("match:getid:"):
         match_id=int(cid.rsplit(":",1)[1]); match_data=guild_match(interaction.guild_id,match_id)
         if not match_data:
@@ -2741,7 +2791,7 @@ async def on_interaction(interaction):
             if history:
                 e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
                 e.set_image(url=sub["screenshot_url"])
-                await history.send(embed=e)
+                await history.send(embed=e,view=registered_match_view(sub["match_id"]))
         else:
             db.review_submission(submission_id, "rejected", interaction.user.id)
             status, clr = "❌ отклонён", discord.Color.red()
@@ -3511,8 +3561,60 @@ async def admin_result(interaction:discord.Interaction,match_id:int,score_a:int,
         return await interaction.followup.send("Матч уже завершён или не найден.",ephemeral=True)
     history=next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")),None)
     if history:
-        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()))
+        await history.send(embed=discord.Embed(title=f"🎮 Матч #{match_id}",description=f"Результат вручную зарегистрирован администрацией: **{score_a}:{score_b}**",color=discord.Color.green()),view=registered_match_view(match_id))
     await interaction.followup.send(f"Матч #{match_id} зарегистрирован: {score_a}:{score_b}.",ephemeral=True)
+
+
+@bot.tree.command(name="match_change_result",description="Изменить результат уже зарегистрированного матча")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.check(command_channel_access)
+@app_commands.check(result_admin_access)
+@app_commands.describe(match_id="Номер матча",score_a="Новый счёт CT",score_b="Новый счёт T",reason="Причина изменения")
+async def match_change_result(interaction:discord.Interaction,match_id:int,score_a:int,score_b:int,reason:str="Исправление результата"):
+    if not ((score_a==13 or score_b==13) and score_a!=score_b and min(score_a,score_b)>=0):
+        return await interaction.response.send_message("Некорректный счёт: одна команда должна иметь 13.",ephemeral=True)
+    match_data=guild_match(interaction.guild_id,match_id)
+    if not match_data or match_data["status"]!="finished":
+        return await interaction.response.send_message("Можно изменить только уже зарегистрированный матч.",ephemeral=True)
+    old_score=f"{match_data['score_a']}:{match_data['score_b']}"
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    if not db.change_finished_match_result(match_id,score_a,score_b,reason[:300]):
+        return await interaction.followup.send("Не удалось изменить результат матча.",ephemeral=True)
+    history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
+    embed=discord.Embed(title=f"✏️ Результат матча #{match_id} изменён",description=f"Было: **{old_score}**\nСтало: **{score_a}:{score_b}**\nПричина: **{reason[:300]}**\nИзменил: {interaction.user.mention}",color=discord.Color.orange())
+    if history:
+        await history.send(embed=embed,view=registered_match_view(match_id))
+    await send_staff_log(interaction.guild,"журнал-матчей",f"✏️ Изменён результат матча #{match_id}",embed.description,discord.Color.orange())
+    await interaction.followup.send(f"✅ Результат матча #{match_id} изменён: **{old_score} → {score_a}:{score_b}**.",ephemeral=True)
+
+
+@bot.tree.command(name="match_cancel",description="Отменить уже зарегистрированный матч")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.check(command_channel_access)
+@app_commands.check(result_admin_access)
+@app_commands.describe(match_id="Номер матча",reason="Причина отмены")
+async def match_cancel(interaction:discord.Interaction,match_id:int,reason:str="Матч отменён администрацией"):
+    match_data=guild_match(interaction.guild_id,match_id)
+    if not match_data or match_data["status"]!="finished":
+        return await interaction.response.send_message("Можно отменить только уже зарегистрированный матч.",ephemeral=True)
+    submission=db.approved_submission_for_match(interaction.guild_id,match_id)
+    old_score=f"{match_data['score_a']}:{match_data['score_b']}"
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    if not db.cancel_finished_match(match_id,reason[:300]):
+        return await interaction.followup.send("Не удалось отменить матч.",ephemeral=True)
+    if submission:
+        try:
+            analysis=json.loads(submission.get("analysis_json") or "{}")
+            matched=[item for item in analysis.get("matched_stats",[]) if item.get("user_id")]
+            db.reverse_player_stats(interaction.guild_id,matched)
+        except Exception as exc:
+            print(f"Reverse cancelled match stats error: {exc!r}",flush=True)
+    description=f"Счёт до отмены: **{old_score}**\nПричина: **{reason[:300]}**\nОтменил: {interaction.user.mention}\nELO, победы, поражения и распознанная статистика возвращены."
+    history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
+    if history:
+        await history.send(embed=discord.Embed(title=f"🚫 Матч #{match_id} отменён",description=description,color=discord.Color.red()))
+    await send_staff_log(interaction.guild,"журнал-матчей",f"🚫 Отменён матч #{match_id}",description,discord.Color.red())
+    await interaction.followup.send(f"✅ Матч #{match_id} отменён, начисления возвращены.",ephemeral=True)
 
 
 @bot.tree.command(name="matches",description="Показать последние матчи карточкой")

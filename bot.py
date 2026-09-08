@@ -576,6 +576,30 @@ def match_ocr_players(guild,match,analysis):
         matched.append(item)
     recognized_count=len(used)
     team_a_ids={int(x) for x in match["team_a"].split(",") if x}
+    team_b_ids={int(x) for x in match["team_b"].split(",") if x}
+
+    # OCR обозначает верхнюю/левую сторону как A, но она не всегда совпадает
+    # с командой A, сохранённой в матче. Определяем ориентацию по распознанным игрокам.
+    direct_matches=0
+    swapped_matches=0
+    for item in matched:
+        user_id=item.get("user_id")
+        screenshot_team=str(item.get("team") or "").upper()
+        if not user_id or screenshot_team not in {"A","B"}:
+            continue
+        if (screenshot_team=="A" and user_id in team_a_ids) or (screenshot_team=="B" and user_id in team_b_ids):
+            direct_matches+=1
+        if (screenshot_team=="A" and user_id in team_b_ids) or (screenshot_team=="B" and user_id in team_a_ids):
+            swapped_matches+=1
+    if swapped_matches>direct_matches:
+        analysis["score_a"],analysis["score_b"]=analysis.get("score_b"),analysis.get("score_a")
+        for item in matched:
+            screenshot_team=str(item.get("team") or "").upper()
+            if screenshot_team=="A": item["team"]="B"
+            elif screenshot_team=="B": item["team"]="A"
+        orientation_note="Стороны скриншота автоматически сопоставлены с командами матча."
+        analysis["notes"]=(str(analysis.get("notes") or "")+" "+orientation_note).strip()
+
     absent=[]
     for candidate in candidates:
         if candidate["user_id"] in used:
@@ -2138,15 +2162,61 @@ class MapVetoView(discord.ui.View):
         self.schedule_timer()
 
 
+def split_match_teams(guild,members):
+    """Балансирует команды по ELO и по возможности никогда не разделяет пати."""
+    if len(members)<=1:
+        return members[:],[guild.me]
+
+    party_groups={}
+    solo_groups=[]
+    for member in members:
+        party=db.party_for_user(guild.id,member.id)
+        if party:
+            party_groups.setdefault(int(party["id"]),[]).append(member)
+        else:
+            solo_groups.append([member])
+    groups=list(party_groups.values())+solo_groups
+    random.shuffle(groups)
+
+    def group_elo(group):
+        return sum(int(db.player(guild.id,member.id).get("points",STARTING_ELO) or STARTING_ELO) for member in group)
+
+    target=len(members)//2
+    total_elo=sum(group_elo(group) for group in groups)
+    exact=[]
+    fallback=[]
+    for mask in range(1<<len(groups)):
+        selected=[groups[index] for index in range(len(groups)) if mask&(1<<index)]
+        size=sum(len(group) for group in selected)
+        if size>target:
+            continue
+        elo=sum(group_elo(group) for group in selected)
+        candidate=(abs(total_elo-2*elo),random.random(),mask)
+        fallback.append((target-size,*candidate))
+        if size==target:
+            exact.append(candidate)
+
+    if exact:
+        mask=min(exact)[2]
+        team_a=[member for index,group in enumerate(groups) if mask&(1<<index) for member in group]
+        team_b=[member for index,group in enumerate(groups) if not mask&(1<<index) for member in group]
+        return team_a,team_b
+
+    # Редкий случай, когда размеры пати не позволяют собрать ровно 5/5.
+    # Сохраняем максимум целых пати и делим только одну группу для заполнения.
+    mask=min(fallback)[3] if fallback else 0
+    team_a=[member for index,group in enumerate(groups) if mask&(1<<index) for member in group]
+    remaining=[member for index,group in enumerate(groups) if not mask&(1<<index) for member in group]
+    need=max(0,target-len(team_a))
+    team_a.extend(remaining[:need])
+    team_b=remaining[need:]
+    return team_a,team_b
+
+
 async def start_match(lobby,text):
     members=live_members(lobby)[:LOBBY_SIZE]
     if not members: return
-    random.shuffle(members)
-    if len(members)==1:
-        a,b=members,[lobby.guild.me]
-    else:
-        split=len(members)//2
-        a,b=members[:split],members[split:]
+    a,b=split_match_teams(lobby.guild,members)
     league=league_of(lobby) or "Default"
     host=random.choice(members)
     active_veto.add(lobby.id)

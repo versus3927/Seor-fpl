@@ -722,8 +722,8 @@ def pending_result_review_view(submission_id):
     view=discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="Принять матч",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"result:approve:{submission_id}"))
     view.add_item(discord.ui.Button(label="Изменить счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"result:editscore:{submission_id}"))
-    view.add_item(discord.ui.Button(label="Изменить стату игроков",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"result:editstats:{submission_id}"))
-    view.add_item(discord.ui.Button(label="ELO игрока",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"result:editelo:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"result:editstats:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Изменить ELO",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"result:editelo:{submission_id}"))
     view.add_item(discord.ui.Button(label="Отклонить матч",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"result:reject:{submission_id}"))
     return view
 
@@ -924,8 +924,8 @@ def registered_match_view(match_id):
     view.add_item(discord.ui.Button(label="Подтвердить результат",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"registeredmatch:confirm:{match_id}"))
     view.add_item(discord.ui.Button(label="Счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:score:{match_id}"))
     view.add_item(discord.ui.Button(label="Статистика",emoji="📊",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:stats:{match_id}"))
-    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏��",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
-    view.add_item(discord.ui.Button(label="ELO игрока",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:editelo:{match_id}"))
+    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
+    view.add_item(discord.ui.Button(label="Изменить ELO",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:editelo:{match_id}"))
     return view
 
 
@@ -1224,7 +1224,13 @@ async def process_result_submission(interaction,match_id,attachment):
         error=""
         if analysis.get("error"):
             raw=str(analysis["error"])
-            error=" Модель распознавания ��едоступна — проверь `GEMINI_VISION_MODEL=gemini-3.6-flash` и `GEMINI_API_KEY`." if ("404" in raw or "NOT_FOUND" in raw) else f" Ошибка AI: `{raw[:180]}`"
+            lower=raw.lower()
+            if analysis.get("error_code")=="temporarily_unavailable" or any(token in lower for token in ("503","unavailable","high demand","429","resource exhausted","timeout")):
+                error=" Сервис распознавания временно перегружен. Бот уже попробовал резервные модели — повтори отправку через 20–30 секунд."
+            elif "404" in raw or "not_found" in lower:
+                error=" Модель из настроек недоступна. Укажи `GEMINI_VISION_MODEL=gemini-2.5-flash` и проверь `GEMINI_API_KEY`."
+            else:
+                error=" Сервис распознавания временно не смог обработать изображение. Повтори отправку."
         return await interaction.followup.send("❌ Не удалось уверенно прочитать итоговый счёт. Отправь более чёткий полный скриншот таблицы матча."+error,ephemeral=True)
     final_a,final_b=detected_a,detected_b
     analysis["registered_score"]=[final_a,final_b]
@@ -2024,6 +2030,19 @@ class AdminMatchEloModal(discord.ui.Modal,title="Изменить ELO матча
         await interaction.response.send_message(content="Выбери игрока матча. Изменится только его ELO и общий рейтинг.",embed=registered_match_stats_embed(interaction.guild,match_id),view=FinishedPlayerEloView(match_id,interaction.user.id),ephemeral=True)
 
 
+class AdminMatchStatsModal(discord.ui.Modal,title="Изменить статистику матча"):
+    match_id=discord.ui.TextInput(label="Номер завершённого матча",placeholder="Например: 24",max_length=10)
+    async def on_submit(self,interaction):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять статистику может только администрация матчей.",ephemeral=True)
+        try: match_id=int(str(self.match_id).strip())
+        except ValueError: return await interaction.response.send_message("Номер матча должен быть целым числом.",ephemeral=True)
+        match_data=guild_match(interaction.guild_id,match_id)
+        if not match_data or match_data["status"]!="finished":
+            return await interaction.response.send_message("Матч не найден или ещё не завершён.",ephemeral=True)
+        await interaction.response.send_message(content="Выбери игрока, затем измени его убийства, ассисты, смерти и MVP.",embed=registered_match_stats_embed(interaction.guild,match_id),view=EditMatchPlayerStatsView(match_id,interaction.user.id),ephemeral=True)
+
+
 class StaffControlView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
@@ -2066,11 +2085,17 @@ class StaffControlView(discord.ui.View):
         channels=[c.mention for c in i.guild.text_channels if c.name.endswith(("проверка-результатов","регистрация-игр"))]
         await i.response.send_message("Проверка результатов: "+(" · ".join(channels) or "каналы не найдены"),ephemeral=True)
 
-    @discord.ui.button(label="ELO матча",emoji="🏆",style=discord.ButtonStyle.primary,custom_id="staff:match_elo",row=1)
+    @discord.ui.button(label="Изменить ELO",emoji="🏆",style=discord.ButtonStyle.primary,custom_id="staff:match_elo",row=1)
     async def match_elo(self,i,b):
         if not can_register_games(i.user):
             return await i.response.send_message("Эта кнопка доступна только администрации и Games Admin.",ephemeral=True)
         await i.response.send_modal(AdminMatchEloModal())
+
+    @discord.ui.button(label="Изменить статистику",emoji="✏️",style=discord.ButtonStyle.primary,custom_id="staff:match_stats",row=2)
+    async def match_stats(self,i,b):
+        if not can_register_games(i.user):
+            return await i.response.send_message("Эта кнопка доступна только администрации и Games Admin.",ephemeral=True)
+        await i.response.send_modal(AdminMatchStatsModal())
 
     @discord.ui.button(label="Тикеты",emoji="🎫",style=discord.ButtonStyle.secondary,custom_id="staff:tickets",row=1)
     async def tickets(self,i,b):
@@ -2442,7 +2467,8 @@ async def ensure_admin_panel_buttons(guild):
             if message.embeds[0].title not in {"🎛️ ПАНЕЛЬ АДМИНА","🛡️ DOMINION CONTROL DESK"}:
                 continue
             component_ids={getattr(child,"custom_id",None) for row in message.components for child in getattr(row,"children",())}
-            if "staff:remove_sanction" not in component_ids:
+            required={"staff:remove_sanction","staff:match_elo","staff:match_stats"}
+            if not required.issubset(component_ids):
                 await message.edit(view=StaffControlView())
                 return True
             return False
@@ -3334,6 +3360,8 @@ async def migrate_dominion_branding(guild):
 async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
+    for guild in bot.guilds:
+        await ensure_admin_panel_buttons(guild)
 
 
 @bot.event
@@ -3420,9 +3448,16 @@ async def on_interaction(interaction):
         return await handle_staff_application_review(interaction,cid)
     if cid in {"seor:registration:start","seor:registration:login"}:
         try:
-            if has_role(interaction.user,REGISTERED_ROLE_NAME) or bool(db.player(interaction.guild_id,interaction.user.id).get("game_id")):
-                message="Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд." if cid.endswith(":start") else "Ты уже вошёл в профиль DOMINION."
-                return await interaction.response.send_message(message,ephemeral=True)
+            profile=db.player(interaction.guild_id,interaction.user.id)
+            has_registered_role=has_role(interaction.user,REGISTERED_ROLE_NAME)
+            has_saved_profile=bool(profile.get("game_id") and profile.get("nickname"))
+            if cid.endswith(":start"):
+                if has_registered_role:
+                    return await interaction.response.send_message("Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд.",ephemeral=True)
+                if has_saved_profile:
+                    return await interaction.response.send_message("Твой профиль уже сохранён. После повторного входа на сервер нажми **«Войти по данным»** и укажи старый ник и Standoff 2 ID — ELO и статистика восстановятся.",ephemeral=True)
+            elif has_registered_role:
+                return await interaction.response.send_message("Ты уже вошёл в профиль DOMINION.",ephemeral=True)
             modal=GameIdModal() if cid.endswith(":start") else LoginByDataModal()
             return await interaction.response.send_modal(modal)
         except Exception as exc:
@@ -3507,7 +3542,7 @@ async def on_interaction(interaction):
         submission_id=int(cid.rsplit(":",1)[1]); action=cid.split(":",2)[1]
         sub=db.submission(submission_id)
         if not sub or sub["status"]!="pending":
-            return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
+            return await interaction.response.send_message("Эта карточка устарела: запись заявки отсутствует в базе или уже обработана. Если это произошло после обновления Railway, отправь результат повторно один раз. Для следующих обновлений подключи Railway Volume к `/data` — новая версия хранит базу там.",ephemeral=True)
         match_data=guild_match(interaction.guild_id,sub["match_id"])
         if not match_data: return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
         if not can_review_result_submission(interaction.user,match_data):

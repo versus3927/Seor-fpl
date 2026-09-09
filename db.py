@@ -1,9 +1,10 @@
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path("data/arena.db")
+DB_PATH = Path(os.getenv("DB_PATH","data/arena.db"))
 
 @contextmanager
 def connect():

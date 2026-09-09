@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 
 
 def _extract_json(text):
@@ -69,8 +70,9 @@ def analyze_screenshot_sync(image_bytes, mime_type="image/png"):
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=key)
-        configured_model = os.getenv("GEMINI_VISION_MODEL", "gemini-3.6-flash").strip()
-        models = list(dict.fromkeys((configured_model, "gemini-3.6-flash")))
+        configured_model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash").strip()
+        extra_models = [value.strip() for value in os.getenv("GEMINI_VISION_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash").split(",") if value.strip()]
+        models = list(dict.fromkeys((configured_model, *extra_models)))
         prompt = """
 Ты анализируешь скриншот итоговой таблицы матча Standoff 2.
 Верни только JSON без Markdown:
@@ -88,19 +90,31 @@ def analyze_screenshot_sync(image_bytes, mime_type="image/png"):
 """
         last_error = None
         for model in models:
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
-                )
-                cleaned = _clean_analysis(_extract_json(response.text))
-                cleaned["model"] = model
-                return cleaned
-            except Exception as exc:
-                last_error = exc
+            for attempt in range(2):
+                try:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+                    )
+                    cleaned = _clean_analysis(_extract_json(response.text))
+                    cleaned["model"] = model
+                    if model != configured_model:
+                        cleaned["notes"] = (cleaned.get("notes","")+f" Использована резервная модель {model}.").strip()
+                    return cleaned
+                except Exception as exc:
+                    last_error = exc
+                    raw=str(exc).lower()
+                    transient=any(token in raw for token in ("503","unavailable","high demand","resource exhausted","429","timeout"))
+                    if transient and attempt==0:
+                        time.sleep(1.5)
+                        continue
+                    break
         raise last_error or RuntimeError("Gemini vision model is unavailable")
     except Exception as exc:
-        return {"error": str(exc)[:300], **_clean_analysis({})}
+        raw=str(exc)
+        lower=raw.lower()
+        code="temporarily_unavailable" if any(token in lower for token in ("503","unavailable","high demand","resource exhausted","429","timeout")) else "vision_error"
+        return {"error": raw[:300], "error_code":code, **_clean_analysis({})}
 
 
 async def analyze_screenshot(image_bytes, mime_type="image/png"):

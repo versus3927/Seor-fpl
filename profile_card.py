@@ -38,7 +38,7 @@ def hexagon(d,c,r,value):
  x,y=c; pts=[(x+r*math.cos(math.radians(i*60-30)),y+r*math.sin(math.radians(i*60-30))) for i in range(6)]; d.polygon(pts,fill=(18,7,37),outline=(*PURPLE,255)); pts2=[(x+(r-10)*math.cos(math.radians(i*60-30)),y+(r-10)*math.sin(math.radians(i*60-30))) for i in range(6)]; d.line(pts2+[pts2[0]],fill=(*PINK,255),width=4); txt(d,(x,y),value,39,WHITE,True,'mm')
 
 def build_profile_card_sync(player,name,avatar_url,recent,meta=None):
- meta=meta or {}; points=max(0,int(player.get('points',0))); lvl=elo_level(points); lg=league(points)
+ meta=meta or {}; points=max(0,int(player.get('points',0))); lvl=elo_level(points); lg=meta.get('league') or league(points)
  games=int(player.get('games',0)); wins=int(player.get('wins',0)); losses=int(player.get('losses',max(0,games-wins))); kills=int(player.get('kills',0)); deaths=int(player.get('deaths',0)); assists=int(player.get('assists',0)); mvp=int(player.get('mvp',0))
  kd=kills/max(1,deaths); wr=wins/max(1,games)*100; avg=kills/max(1,games); rounds=max(1,games*20); kpr=kills/rounds; apr=assists/rounds; rating=kd*.55+wr/100*.45; impact=max(0,2.13*kpr+.42*apr-.41); svr=max(0,min(100,(1-deaths/rounds)*100))
  im=Image.new('RGBA',(W,H),(*BG,255)); d=ImageDraw.Draw(im,'RGBA')

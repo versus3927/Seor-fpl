@@ -289,7 +289,7 @@ def can_use_role_panel(member):
 async def command_channel_access(interaction):
     if not interaction.guild:
         return False
-    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛����・панель-админа"]
+    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛������・панель-админа"]
     return not allowed_channels or bool(interaction.channel and interaction.channel.id in {c.id for c in allowed_channels})
 
 
@@ -640,7 +640,7 @@ def match_ocr_players(guild,match,analysis):
 
 def result_review_embed(submission_id,match,analysis,final_score,submitter):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
-    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "н�������� распознан"
+    detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "не распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
     for item in analysis.get("matched_stats",[])[:10]:
         player=f"<@{item['user_id']}>" if item.get("user_id") else f"`{item.get('name','?')}`"
@@ -676,6 +676,127 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
     e.add_field(name="Проверка модератором",value=("\n".join(notes)[:1024] if notes else "Сверь счёт, команды и статистику со скриншотом."),inline=False)
     e.set_footer(text="DOMINION FACEIT · принять только после сверки скриншота")
     return e
+
+
+def can_review_result_submission(member,match_data):
+    return can_register_games(member) or curator_league(member)==str(match_data["league"]).lower()
+
+
+def pending_result_review_view(submission_id):
+    view=discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Принять матч",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"result:approve:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Изменить счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"result:editscore:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Изменить стату игроков",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"result:editstats:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Отклонить матч",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"result:reject:{submission_id}"))
+    return view
+
+
+def pending_submission_stats_embed(guild,submission,match_data):
+    try: analysis=json.loads(submission.get("analysis_json") or "{}")
+    except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+    stats={int(item.get("user_id")):item for item in analysis.get("matched_stats",[]) if item.get("user_id")}
+    team_a={int(value) for value in match_data["team_a"].split(",") if value}
+    ids=[int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value]
+    lines=[]
+    for user_id in ids:
+        member=guild.get_member(user_id); profile=db.player(guild.id,user_id)
+        nick=(member.display_name if member else None) or profile.get("nickname") or f"Игрок {user_id}"
+        item=stats.get(user_id,{})
+        lines.append(f"**{'CT' if user_id in team_a else 'T'} · {discord.utils.escape_markdown(nick)}** — {int(item.get('kills',0))}/{int(item.get('assists',0))}/{int(item.get('deaths',0))} · MVP {int(item.get('mvp',0))}")
+    return discord.Embed(title=f"✏️ Статистика заявки #{submission['id']}",description="Выбери игрока ниже.\n\n"+"\n".join(lines)[:3900],color=discord.Color.blurple())
+
+
+async def refresh_pending_review_message(message,guild,submission_id):
+    submission=db.submission(submission_id)
+    if not submission or submission["status"]!="pending": return
+    match_data=guild_match(guild.id,submission["match_id"])
+    if not match_data: return
+    try: analysis=json.loads(submission.get("analysis_json") or "{}")
+    except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+    submitter=guild.get_member(submission["submitter_id"])
+    if not submitter:
+        submitter=type("Submitter",(),{"mention":f"<@{submission['submitter_id']}>"})()
+    embed=result_review_embed(submission_id,match_data,analysis,f"{submission['score_a']}:{submission['score_b']}",submitter)
+    if submission.get("screenshot_url"): embed.set_image(url=submission["screenshot_url"])
+    await message.edit(embed=embed,view=pending_result_review_view(submission_id))
+
+
+class PendingResultScoreModal(discord.ui.Modal,title="Изменить счёт матча"):
+    def __init__(self,submission,source_message):
+        super().__init__(); self.submission_id=submission["id"]; self.source_message=source_message
+        self.score_a=discord.ui.TextInput(label="Счёт команды CT",default=str(submission["score_a"]),max_length=2)
+        self.score_b=discord.ui.TextInput(label="Счёт команды T",default=str(submission["score_b"]),max_length=2)
+        self.add_item(self.score_a); self.add_item(self.score_b)
+
+    async def on_submit(self,interaction):
+        submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
+        if not submission or submission["status"]!="pending" or not match_data:
+            return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
+        if not can_review_result_submission(interaction.user,match_data):
+            return await interaction.response.send_message("У тебя нет доступа к проверке этого матча.",ephemeral=True)
+        try: score_a=int(self.score_a.value); score_b=int(self.score_b.value)
+        except ValueError: return await interaction.response.send_message("Счёт должен состоять из чисел.",ephemeral=True)
+        if score_a<0 or score_b<0 or score_a==score_b or max(score_a,score_b)!=13:
+            return await interaction.response.send_message("Финальный счёт должен быть без ничьей, а победитель должен иметь 13 раундов.",ephemeral=True)
+        if not db.update_pending_submission_score(self.submission_id,interaction.guild_id,score_a,score_b):
+            return await interaction.response.send_message("Не удалось изменить счёт.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await refresh_pending_review_message(self.source_message,interaction.guild,self.submission_id)
+        await interaction.followup.send(f"✅ Счёт изменён на **{score_a}:{score_b}**.",ephemeral=True)
+
+
+class PendingPlayerStatsModal(discord.ui.Modal):
+    def __init__(self,submission_id,user_id,nickname,current,source_message):
+        super().__init__(title=f"Стата: {nickname}"[:45]); self.submission_id=submission_id; self.user_id=user_id; self.nickname=nickname; self.source_message=source_message
+        self.kills=discord.ui.TextInput(label="Убийства",default=str(int(current.get("kills",0))),max_length=3)
+        self.assists=discord.ui.TextInput(label="Ассисты",default=str(int(current.get("assists",0))),max_length=3)
+        self.deaths=discord.ui.TextInput(label="Смерти",default=str(int(current.get("deaths",0))),max_length=3)
+        self.mvp=discord.ui.TextInput(label="MVP",default=str(int(current.get("mvp",0))),max_length=3)
+        for item in (self.kills,self.assists,self.deaths,self.mvp): self.add_item(item)
+
+    async def on_submit(self,interaction):
+        submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
+        if not submission or submission["status"]!="pending" or not match_data:
+            return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
+        if not can_review_result_submission(interaction.user,match_data):
+            return await interaction.response.send_message("У тебя нет доступа к проверке этого матча.",ephemeral=True)
+        raw=[self.kills.value,self.assists.value,self.deaths.value,self.mvp.value]
+        if any(not value.strip().isdigit() for value in raw):
+            return await interaction.response.send_message("Введи целые числа от 0 до 999.",ephemeral=True)
+        values=[int(value) for value in raw]
+        if any(value>999 for value in values): return await interaction.response.send_message("Максимальное значение — 999.",ephemeral=True)
+        if not db.update_pending_submission_player_stats(self.submission_id,interaction.guild_id,self.user_id,*values):
+            return await interaction.response.send_message("Не удалось изменить статистику.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await refresh_pending_review_message(self.source_message,interaction.guild,self.submission_id)
+        await interaction.followup.send(f"✅ Статистика **{discord.utils.escape_markdown(self.nickname)}** изменена на **{values[0]}/{values[1]}/{values[2]}**, MVP **{values[3]}**.",ephemeral=True)
+
+
+class PendingPlayerStatsSelect(discord.ui.UserSelect):
+    def __init__(self,submission_id,source_message):
+        self.submission_id=submission_id; self.source_message=source_message
+        super().__init__(placeholder="Выбери игрока матча",min_values=1,max_values=1)
+    async def callback(self,interaction):
+        submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
+        member=self.values[0]
+        if not submission or submission["status"]!="pending" or not match_data:
+            return await interaction.response.send_message("Заявка уже обработана.",ephemeral=True)
+        ids={int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value}
+        if member.id not in ids: return await interaction.response.send_message("Этот игрок не участвовал в матче.",ephemeral=True)
+        try: analysis=json.loads(submission.get("analysis_json") or "{}")
+        except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+        current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==member.id),{})
+        await interaction.response.send_modal(PendingPlayerStatsModal(self.submission_id,member.id,member.display_name,current,self.source_message))
+
+
+class PendingPlayerStatsView(discord.ui.View):
+    def __init__(self,submission_id,manager_id,source_message):
+        super().__init__(timeout=300); self.manager_id=manager_id
+        self.add_item(PendingPlayerStatsSelect(submission_id,source_message))
+    async def interaction_check(self,interaction):
+        if interaction.user.id!=self.manager_id:
+            await interaction.response.send_message("Эта форма открыта другим администратором.",ephemeral=True); return False
+        return True
 
 
 def registered_match_view(match_id):
@@ -923,10 +1044,7 @@ async def process_result_submission(interaction,match_id,attachment):
     extension="jpg" if "jpeg" in content_type else ("webp" if "webp" in content_type else "png")
     image_name=f"match-{match_id}-result.{extension}"
     e.set_image(url=f"attachment://{image_name}")
-    view=discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="Принять",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"result:approve:{submission_id}"))
-    view.add_item(discord.ui.Button(label="Отклонить",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"result:reject:{submission_id}"))
-    await review.send(embed=e,view=view,file=discord.File(io.BytesIO(image_bytes),filename=image_name))
+    await review.send(embed=e,view=pending_result_review_view(submission_id),file=discord.File(io.BytesIO(image_bytes),filename=image_name))
     await interaction.followup.send(f"✅ Скриншот распознан. Результат №{submission_id} отправлен модераторам.",ephemeral=True)
 
 
@@ -945,7 +1063,9 @@ class GameLookupModal(discord.ui.Modal, title="Поиск профиля"):
             ids=set((match["team_a"]+","+match["team_b"]).split(","))
             if str(p["user_id"]) in ids: recent.append(match)
         avatar_url=str(member.display_avatar.with_size(256).url) if member else ""
-        card=await build_profile_card(p,name,avatar_url,recent,build_profile_meta(interaction.guild,p,member))
+        league_profile,league_name=league_profile_data(interaction.guild_id,p,member)
+        recent=[match for match in recent if match["league"]==league_name]
+        card=await build_profile_card(league_profile,name,avatar_url,recent,build_profile_meta(interaction.guild,league_profile,member,league_name))
         await interaction.followup.send(file=discord.File(card,"profile.png"),ephemeral=True)
 
 
@@ -1058,8 +1178,9 @@ class DashboardPanelView(discord.ui.View):
         await i.response.send_message("Используй `/top` и выбери лигу: Default League, Dominion Rise, Dominion Ascend или Pro League.",ephemeral=True)
 
     async def place(self,i):
-        rows=db.leaders(i.guild_id,1000); pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.player(i.guild_id,i.user.id)
-        await i.response.send_message(f"📍 Твоё место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**, уровень: **LVL {elo_level(p['points'])}**.",ephemeral=True)
+        league_name=member_current_league(i.user); rows=db.league_leaders(i.guild_id,league_name,1000)
+        pos=next((n for n,p in enumerate(rows,1) if p["user_id"]==i.user.id),None); p=db.league_player(i.guild_id,i.user.id,league_name)
+        await i.response.send_message(f"📍 Лига: **{league_display_name(league_name)}** · место: **#{pos or '—'}**, рейтинг: **{p['points']} ELO**, уровень: **LVL {elo_level(p['points'])}**.",ephemeral=True)
 
     async def norms(self,i):
         await i.response.send_message(f"📗 Квалификация: **K/D {QUALIFICATION_KD:.2f}**. Игроки лиг **Division** и **Pro** освобождены от норматива.\n\n**Уровни ELO:**\n{elo_table_text()}",ephemeral=True)
@@ -1344,7 +1465,7 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
         except (discord.Forbidden,discord.HTTPException,ValueError):
             return await interaction.followup.send("Не удалось применить санкцию. Проверь права и длительность.",ephemeral=True)
         sanction_description=f"Участник: {member.mention}\nДействие: **{action}**\nПричина: {reason}\nАдминистратор: {interaction.user.mention}"
-        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применена",sanction_description,discord.Color.orange())
+        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применен��",sanction_description,discord.Color.orange())
         await send_punishment_log(interaction.guild,"⚖️ Санкция применена",sanction_description,discord.Color.orange())
         await interaction.followup.send(f"✅ Санкция **{action}** применена к {member.mention}.",ephemeral=True)
 
@@ -1919,53 +2040,128 @@ async def ensure_staff_application_system(guild):
     return panel
 
 
-class TicketTypeSelect(discord.ui.Select):
-    TICKET_TYPES = {
-        "cheats": ("🛡️", "Подозрение на нечестную игру", "Сообщение о возможных читах", ("owner","director","head_admin","head_ac","anticheat")),
-        "player": ("🚫", "Жалоба на игрока", "Нарушения, оскорбления или срыв матча", ("owner","director","head_admin","admin","ticket_support","moderator")),
-        "match": ("🎯", "Спор по матчу", "Результат матча или техническая проблема", ("owner","director","head_admin","admin","ticket_support","curator_qualifications","curator_division","curator_pro")),
-        "staff": ("⚖️", "Обращение по персоналу", "Рассматривает только старшее руководство", ("owner","director","head_admin")),
-        "appeal": ("📄", "Обжалование наказания", "Пересмотр выданного варна или санкции", ("owner","director","head_admin","admin","ticket_support")),
-        "other": ("❓", "Другой вопрос", "Общая помощь по остальным вопросам", ("owner","director","head_admin","admin","ticket_support")),
+TICKET_TYPES = {
+    "cheats": ("🛡️", "Подозрение на нечестную игру", "Сообщение о возможных читах", ("owner","director","head_admin","head_ac","anticheat")),
+    "player": ("🚫", "Жалоба на игрока", "Нарушения, оскорбления или срыв матча", ("owner","director","head_admin","admin","ticket_support","moderator")),
+    "match": ("🎯", "Проблема с матчем", "Результат матча или техническая проблема", ("owner","director","head_admin","admin","ticket_support","curator_qualifications","curator_division","curator_pro")),
+    "staff": ("⚖️", "Обращение по персоналу", "Рассматривает только старшее руководство", ("owner","director","head_admin")),
+    "appeal": ("📄", "Обжалование наказания", "Пересмотр выданного варна или санкции", ("owner","director","head_admin","admin","ticket_support")),
+    "other": ("❓", "Другой вопрос", "Общая помощь по остальным вопросам", ("owner","director","head_admin","admin","ticket_support")),
+}
+
+TICKET_FORM_CONFIG={
+    "player": (
+        "Жалоба на игрока",
+        (("target","Ник или Discord ID игрока","Например: player123 или 123456789012345678",False,100),
+         ("details","Сообщение поддержке","Опиши нарушение. Скриншоты можно отправить после создания тикета.",True,1000)),
+    ),
+    "match": (
+        "Проблема с регистрацией матча",
+        (("match_id","Номер игры","Например: 1243",False,20),
+         ("details","Сообщение поддержке","Опиши проблему со счётом, статистикой или регистрацией матча.",True,1000)),
+    ),
+    "cheats": (
+        "Подозрение на нечестную игру",
+        (("target","Ник или Discord ID игрока","Укажи игрока, на которого подаётся жалоба",False,100),
+         ("details","Описание и доказательства","Что произошло? Ссылки и скриншоты можно добавить в тикете.",True,1000)),
+    ),
+    "staff": (
+        "Обращение по персоналу",
+        (("target","Сотрудник или его Discord ID","На кого или по какому вопросу обращение",False,100),
+         ("details","Сообщение руководству","Подробно опиши ситуацию. Обращение увидит только руководство.",True,1000)),
+    ),
+    "appeal": (
+        "Обжалование наказания",
+        (("punishment","Какое наказание","Например: Anticheat warn 1/3 или timeout",False,100),
+         ("details","Причина обжалования","Почему наказание нужно пересмотреть?",True,1000)),
+    ),
+    "other": (
+        "Обращение в поддержку",
+        (("subject","Тема обращения","Кратко укажи тему",False,100),
+         ("details","Сообщение поддержке","Опиши вопрос. Скриншоты можно добавить после создания тикета.",True,1000)),
+    ),
+}
+
+
+async def create_ticket_from_form(interaction,key,form_values):
+    emoji,title,description,staff_keys=TICKET_TYPES[key]
+    guild=interaction.guild
+    staff_roles=await ensure_staff_roles(guild)
+    existing=next((channel for channel in guild.text_channels if (channel.topic or "").startswith(f"ticket-owner:{interaction.user.id}")),None)
+    if existing:
+        return await interaction.followup.send(f"У тебя уже есть открытый тикет: {existing.mention}",ephemeral=True)
+    category=discord.utils.get(guild.categories,name="🎫 TICKETS") or await guild.create_category("🎫 TICKETS",reason="DOMINION: первый тикет")
+    overwrites={
+        guild.default_role:discord.PermissionOverwrite(view_channel=False),
+        interaction.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,attach_files=True,read_message_history=True),
+        guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True,manage_messages=True),
     }
+    oversight_keys=("owner","developer","director","head_admin")
+    for staff_key in dict.fromkeys((*staff_keys,*oversight_keys)):
+        role=staff_roles.get(staff_key)
+        if role:
+            overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
+    safe_name=re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+","-",interaction.user.name).strip("-") or str(interaction.user.id)
+    channel=await guild.create_text_channel(f"{key}-{safe_name}"[:90],category=category,topic=f"ticket-owner:{interaction.user.id}:{key}",overwrites=overwrites,reason=f"DOMINION ticket: {title}")
+    silent_staff={"owner","developer","director","admin","head_admin"}
+    staff_mentions=" ".join(staff_roles[item].mention for item in staff_keys if item not in silent_staff and staff_roles.get(item))
+    content=" ".join(part for part in (interaction.user.mention,staff_mentions) if part)
+    embed=discord.Embed(title=f"{emoji} {title}",description=f"{description}. Скриншоты и другие доказательства можно добавить сообщением ниже.",color=color())
+    labels={
+        "target":"Игрок / участник","match_id":"Номер игры","details":"Сообщение поддержки",
+        "punishment":"Наказание","subject":"Тема обращения",
+    }
+    for field_key,value in form_values.items():
+        embed.add_field(name=labels.get(field_key,field_key),value=str(value)[:1024],inline=False)
+    embed.set_footer(text=f"Автор обращения: {interaction.user.display_name}")
+    await channel.send(content=content,embed=embed)
+    control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или ответственный сотрудник может закрыть тикет кнопкой ниже.",color=discord.Color.red())
+    await channel.send(embed=control,view=TicketChannelView())
+    summary=" · ".join(str(value).replace("\n"," ")[:120] for value in form_values.values())
+    await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}\nДанные: {summary}",discord.Color.purple())
+    await notify_ticket_inbox(guild,channel,title,interaction.user)
+    await interaction.followup.send(f"✅ Тикет создан: {channel.mention}",ephemeral=True)
+
+
+class TicketCreateModal(discord.ui.Modal):
+    def __init__(self,key):
+        title,field_specs=TICKET_FORM_CONFIG[key]
+        super().__init__(title=title[:45],custom_id=f"ticket:form:{key}")
+        self.ticket_key=key; self.inputs={}
+        for field_key,label,placeholder,paragraph,max_length in field_specs:
+            component=discord.ui.TextInput(
+                label=label[:45],placeholder=placeholder[:100],required=True,
+                style=discord.TextStyle.paragraph if paragraph else discord.TextStyle.short,
+                max_length=max_length,
+            )
+            self.inputs[field_key]=component
+            self.add_item(component)
+
+    async def on_submit(self,interaction):
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        values={key:component.value.strip() for key,component in self.inputs.items()}
+        try:
+            await create_ticket_from_form(interaction,self.ticket_key,values)
+        except (discord.Forbidden,discord.HTTPException) as exc:
+            print(f"Ticket form create error: {type(exc).__name__}: {exc!r}",flush=True)
+            await interaction.followup.send("Не удалось создать тикет. Проверь права бота на создание каналов и управление ролями.",ephemeral=True)
+
+
+class TicketTypeSelect(discord.ui.Select):
+    TICKET_TYPES=TICKET_TYPES
 
     def __init__(self):
-        options=[discord.SelectOption(label=title,value=key,emoji=emoji,description=description) for key,(emoji,title,description,_) in self.TICKET_TYPES.items()]
+        options=[discord.SelectOption(label=title,value=key,emoji=emoji,description=description) for key,(emoji,title,description,_) in TICKET_TYPES.items()]
         super().__init__(placeholder="Выбери раздел обращения",options=options,custom_id="ticket:type",min_values=1,max_values=1)
 
-    async def callback(self, interaction):
-        await interaction.response.defer(ephemeral=True,thinking=True)
+    async def callback(self,interaction):
         key=self.values[0]
-        emoji,title,description,staff_keys=self.TICKET_TYPES[key]
-        guild=interaction.guild
-        staff_roles=await ensure_staff_roles(guild)
-        existing=next((c for c in guild.text_channels if (c.topic or "").startswith(f"ticket-owner:{interaction.user.id}")),None)
+        if key not in TICKET_FORM_CONFIG:
+            return await interaction.response.send_message("Для этого раздела форма не настроена.",ephemeral=True)
+        existing=next((channel for channel in interaction.guild.text_channels if (channel.topic or "").startswith(f"ticket-owner:{interaction.user.id}")),None)
         if existing:
-            return await interaction.followup.send(f"У тебя уже есть открытый тикет: {existing.mention}",ephemeral=True)
-        category=discord.utils.get(guild.categories,name="🎫 TICKETS") or await guild.create_category("🎫 TICKETS")
-        overwrites={
-            guild.default_role:discord.PermissionOverwrite(view_channel=False),
-            interaction.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,attach_files=True,read_message_history=True),
-            guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True,manage_messages=True),
-        }
-        oversight_keys=("owner","developer","director","head_admin")
-        for staff_key in dict.fromkeys((*staff_keys,*oversight_keys)):
-            role=staff_roles.get(staff_key)
-            if role:
-                overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_messages=True,read_message_history=True)
-        safe_name=re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ_-]+","-",interaction.user.name).strip("-") or str(interaction.user.id)
-        channel=await guild.create_text_channel(f"{key}-{safe_name}"[:90],category=category,topic=f"ticket-owner:{interaction.user.id}:{key}",overwrites=overwrites)
-        # Старшее руководство получает доступ к тикету, но не упоминается.
-        silent_staff={"owner","developer","director","admin","head_admin"}
-        staff_mentions=" ".join(staff_roles[k].mention for k in staff_keys if k not in silent_staff and staff_roles.get(k))
-        content=" ".join(part for part in (interaction.user.mention,staff_mentions) if part)
-        embed=discord.Embed(title=f"{emoji} {title}",description=f"{description}. Опиши ситуацию и приложи доказательства.",color=color())
-        await channel.send(content=content,embed=embed)
-        control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или сотрудник администрации может закрыть тикет кнопкой ниже.",color=discord.Color.red())
-        await channel.send(embed=control,view=TicketChannelView())
-        await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}",discord.Color.purple())
-        await notify_ticket_inbox(guild,channel,title,interaction.user)
-        await interaction.followup.send(f"Тикет создан: {channel.mention}",ephemeral=True)
+            return await interaction.response.send_message(f"У тебя уже есть открытый тикет: {existing.mention}",ephemeral=True)
+        await interaction.response.send_modal(TicketCreateModal(key))
 
 
 class TicketView(discord.ui.View):
@@ -2234,28 +2430,47 @@ def league_top_embed():
     return e
 
 
-def build_profile_meta(guild,player_data,member=None):
-    current_league=player_league(int(player_data.get("points",0)))
-    league_rows=[row for row in db.leaders(guild.id,1000) if player_league(int(row.get("points",0)))==current_league]
+def member_current_league(member):
+    if member:
+        role_names={normalized_role_name(role.name) for role in member.roles}
+        for league_name in ("Pro","Division","Qualifications","Default"):
+            if normalized_role_name(LEAGUE_ROLES[league_name.lower()]) in role_names:
+                return league_name
+    return "Default"
+
+
+def league_profile_data(guild_id,player_data,member):
+    league_name=member_current_league(member)
+    league_stats=db.league_player(guild_id,int(player_data["user_id"]),league_name)
+    merged=dict(player_data)
+    for key in ("games","wins","losses","kills","deaths","assists","mvp","points"):
+        merged[key]=league_stats[key]
+    return merged,league_name
+
+
+def build_profile_meta(guild,player_data,member=None,league_name=None):
+    league_name=league_name or member_current_league(member)
+    league_rows=db.league_leaders(guild.id,league_name,1000)
     position=next((i for i,row in enumerate(league_rows,1) if int(row["user_id"])==int(player_data["user_id"])),None)
     top=[]
     for row in league_rows[:3]:
         top_member=guild.get_member(int(row["user_id"]))
         top.append({"name":row.get("nickname") or (top_member.display_name if top_member else f"Player {row['user_id']}"),"avatar_url":str(top_member.display_avatar.with_size(128).url) if top_member else ""})
     joined_date=member.joined_at.strftime("%d.%m.%Y") if member and member.joined_at else "—"
-    return {"position":position or "—","joined_date":joined_date,"league_top":top}
+    return {"position":position or "—","joined_date":joined_date,"league_top":top,"league":league_name}
 
 
 async def send_profile(interaction,member=None):
     await interaction.response.defer(ephemeral=True, thinking=True)
     member=member or interaction.user
     p = db.player(interaction.guild_id, member.id)
+    league_profile,league_name=league_profile_data(interaction.guild_id,p,member)
     recent=[]
     for m in db.recent_matches(interaction.guild_id,50):
         ids=set((m["team_a"]+","+m["team_b"]).split(","))
-        if str(member.id) in ids: recent.append(m)
+        if str(member.id) in ids and m["league"]==league_name: recent.append(m)
     avatar_url=member.display_avatar.with_size(256).url
-    card=await build_profile_card(p,p.get("nickname") or member.display_name,str(avatar_url),recent,build_profile_meta(interaction.guild,p,member))
+    card=await build_profile_card(league_profile,p.get("nickname") or member.display_name,str(avatar_url),recent,build_profile_meta(interaction.guild,league_profile,member,league_name))
     view=None
     if member.id==interaction.user.id:
         view=discord.ui.View(timeout=60)
@@ -2979,43 +3194,43 @@ async def on_interaction(interaction):
         host_member=interaction.guild.get_member(match_data["host_id"])
         host_name=host_member.mention if host_member else (host_profile.get("nickname") or f"игрок {match_data['host_id']}")
         return await interaction.response.send_message(f"🆔 Standoff 2 ID хоста {host_name}: **{host_game_id}**",ephemeral=True)
-    elif cid.startswith("result:approve:") or cid.startswith("result:reject:"):
-        submission_id = int(cid.rsplit(":", 1)[1])
-        sub = db.submission(submission_id)
-        if not sub or sub["status"] != "pending":
-            return await interaction.response.send_message("Заявка уже обработана или не найдена.", ephemeral=True)
+    elif cid.startswith(("result:approve:","result:reject:","result:editscore:","result:editstats:")):
+        submission_id=int(cid.rsplit(":",1)[1]); action=cid.split(":",2)[1]
+        sub=db.submission(submission_id)
+        if not sub or sub["status"]!="pending":
+            return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
         match_data=guild_match(interaction.guild_id,sub["match_id"])
-        if not match_data:
-            return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
-        allowed=can_register_games(interaction.user) or curator_league(interaction.user)==str(match_data["league"]).lower()
-        if not allowed:
-            return await interaction.response.send_message("Подтверждать игру может Admin, Owner или куратор этой лиги.", ephemeral=True)
+        if not match_data: return await interaction.response.send_message("Игры с таким номером нет.",ephemeral=True)
+        if not can_review_result_submission(interaction.user,match_data):
+            return await interaction.response.send_message("Проверять игру может администрация матчей или куратор этой лиги.",ephemeral=True)
+        if action=="editscore":
+            return await interaction.response.send_modal(PendingResultScoreModal(sub,interaction.message))
+        if action=="editstats":
+            return await interaction.response.send_message(embed=pending_submission_stats_embed(interaction.guild,sub,match_data),view=PendingPlayerStatsView(submission_id,interaction.user.id,interaction.message),ephemeral=True)
         await interaction.response.defer()
-        approved = cid.startswith("result:approve:")
+        approved=action=="approve"
         if approved:
-            if not db.finish_match(sub["match_id"], sub["score_a"], sub["score_b"]):
-                return await interaction.followup.send("Матч уже завершён или не найден.", ephemeral=True)
-            db.review_submission(submission_id, "approved", interaction.user.id)
+            if not db.finish_match(sub["match_id"],sub["score_a"],sub["score_b"]):
+                return await interaction.followup.send("Матч уже завершён или не найден.",ephemeral=True)
+            db.review_submission(submission_id,"approved",interaction.user.id)
             try:
                 analysis=json.loads(sub.get("analysis_json") or "{}")
                 matched=[item for item in analysis.get("matched_stats",[]) if item.get("user_id")]
-                db.apply_player_stats(sub["guild_id"],matched,match_data["league"]) 
-            except Exception as exc:
-                print(f"Apply screenshot stats error: {exc}",flush=True)
-            status, clr = "✅ принят", discord.Color.green()
-            history = next((c for c in interaction.guild.text_channels if c.name.endswith("история-игр")), None)
+                db.apply_player_stats(sub["guild_id"],matched,match_data["league"])
+            except Exception as exc: print(f"Apply screenshot stats error: {exc}",flush=True)
+            status,clr="✅ принят",discord.Color.green()
+            history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
             if history:
-                e = discord.Embed(title=f"🎮 Матч #{sub['match_id']}", description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}", color=clr)
-                e.set_image(url=sub["screenshot_url"])
-                await history.send(embed=e,view=registered_match_view(sub["match_id"]))
+                embed=discord.Embed(title=f"🎮 Матч #{sub['match_id']}",description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}",color=clr)
+                embed.set_image(url=sub["screenshot_url"])
+                await history.send(embed=embed,view=registered_match_view(sub["match_id"]))
         else:
-            db.review_submission(submission_id, "rejected", interaction.user.id)
-            status, clr = "❌ отклонён", discord.Color.red()
+            db.review_submission(submission_id,"rejected",interaction.user.id)
+            status,clr="❌ отклонён",discord.Color.red()
         await send_staff_log(interaction.guild,"журнал-матчей",f"🎮 Проверка матча #{sub['match_id']}",f"Решение: **{status}**\nМодератор: {interaction.user.mention}\nЗаявка: **#{submission_id}**",clr)
-        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
-        embed.color = clr
-        embed.description = (embed.description or "") + f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
-        await interaction.message.edit(embed=embed, view=None)
+        embed=interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+        embed.color=clr; embed.description=(embed.description or "")+f"\n\nСтатус: **{status}**\nПроверил: {interaction.user.mention}"
+        await interaction.message.edit(embed=embed,view=None)
 
 
 async def delete_empty_match_room(channel):
@@ -3046,7 +3261,7 @@ async def on_voice_state_update(member,before,after):
                 reason="DOMINION FACEIT: выход из Lobby во время пиков карт",
             )
             try:
-                await member.send("Ты получил мут / timeout на **10 минут** за выход из Lobby во время пиков карт.")
+                await member.send("Ты получил мут / timeout на **10 мин��т** за выход из Lobby во время пиков карт.")
             except discord.HTTPException:
                 pass
             await send_staff_log(
@@ -3276,7 +3491,7 @@ async def sync_default_league(interaction:discord.Interaction):
     stats=await give_default_league_to_registered(interaction.guild)
     default_role=await default_league_role(interaction.guild)
     if not default_role:
-        return await interaction.followup.send("Не найдена роль `Default League`.",ephemeral=True)
+        return await interaction.followup.send("Не ��айдена роль `Default League`.",ephemeral=True)
     if stats["hierarchy"]:
         return await interaction.followup.send("Discord запрещает выдачу: подними роль бота **выше `Default League`** в настройках ролей сервера, затем повтори команду.",ephemeral=True)
     await interaction.followup.send(

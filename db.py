@@ -214,6 +214,34 @@ def submission(submission_id:int):
         row=con.execute("SELECT * FROM result_submissions WHERE id=?",(submission_id,)).fetchone()
         return dict(row) if row else None
 
+def update_pending_submission_score(submission_id:int,guild_id:int,score_a:int,score_b:int):
+    with connect() as con:
+        row=con.execute("SELECT * FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
+        if not row: return False
+        con.execute("UPDATE result_submissions SET score_a=?,score_b=? WHERE id=?",(int(score_a),int(score_b),submission_id))
+        return True
+
+def update_pending_submission_player_stats(submission_id:int,guild_id:int,user_id:int,kills:int,assists:int,deaths:int,mvp:int):
+    with connect() as con:
+        submission_row=con.execute("SELECT * FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
+        if not submission_row: return False
+        match_row=con.execute("SELECT * FROM matches WHERE id=? AND guild_id=?",(submission_row['match_id'],guild_id)).fetchone()
+        if not match_row: return False
+        participants={int(value) for value in (match_row['team_a']+','+match_row['team_b']).split(',') if value}
+        if user_id not in participants: return False
+        try: analysis=json.loads(submission_row['analysis_json'] or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+        matched=list(analysis.get('matched_stats') or [])
+        current=next((item for item in matched if int(item.get('user_id') or 0)==user_id),None)
+        if current is None:
+            current={"user_id":user_id}
+            matched.append(current)
+        current.update({"kills":max(0,int(kills)),"assists":max(0,int(assists)),"deaths":max(0,int(deaths)),"mvp":max(0,int(mvp))})
+        analysis['matched_stats']=matched
+        analysis['recognized_players']=len([item for item in matched if item.get('user_id')])
+        con.execute("UPDATE result_submissions SET analysis_json=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),submission_id))
+        return True
+
 def review_submission(submission_id:int,status:str,reviewer_id:int,reason:str|None=None):
     with connect() as con:
         cur=con.execute("UPDATE result_submissions SET status=?,reviewer_id=?,reason=? WHERE id=? AND status='pending'",(status,reviewer_id,reason,submission_id))

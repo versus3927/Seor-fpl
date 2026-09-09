@@ -544,8 +544,7 @@ class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
             await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после входа")
         except discord.Forbidden:
             return await interaction.followup.send("Профиль восстановлен, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
-        db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
-        await interaction.followup.send(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
+        await interaction.followup.send(f"✅ Вход выполнен. Профиль **{profile['nickname']}** восстановлен · роль **default League** · **{profile['points']} ELO**.",ephemeral=True)
 
 
 class RegistrationView(discord.ui.View):
@@ -638,7 +637,11 @@ def match_ocr_players(guild,match,analysis):
     return analysis
 
 
-def result_review_embed(submission_id,match,analysis,final_score,submitter):
+def signed_elo(value):
+    return f"{int(value):+d}"
+
+
+def result_review_embed(submission_id,match,analysis,final_score,submitter,elo_a_delta=None,elo_b_delta=None):
     detected_a=analysis.get("score_a"); detected_b=analysis.get("score_b")
     detected=f"{detected_a}:{detected_b}" if detected_a is not None and detected_b is not None else "не распознан"
     lines_a=[]; lines_b=[]; unmatched=[]
@@ -659,6 +662,10 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter):
         color=embed_color,
     )
     e.add_field(name="Результат",value=f"Со скриншота: **{detected}**\nК регистрации: **{final_score}**\nИсточник: **автораспознавание**",inline=True)
+    if elo_a_delta is None or elo_b_delta is None:
+        score_parts=[int(value) for value in final_score.split(":",1)]
+        elo_a_delta,elo_b_delta=db.default_elo_deltas(*score_parts)
+    e.add_field(name="Начисление ELO",value=f"Команда A: **{signed_elo(elo_a_delta)}** каждому\nКоманда B: **{signed_elo(elo_b_delta)}** каждому",inline=True)
     e.add_field(name="Матч",value=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{analysis.get('map') or match.get('map') or 'не определена'}**\nХост: <@{match['host_id']}>",inline=True)
     e.add_field(name="Распознавание",value=f"Точность: **{confidence:.0f}%**\nМодель: `{analysis.get('model') or 'ручной режим'}`\nРаспознано: **{analysis.get('recognized_players',len(analysis.get('matched_stats',[])))}/10**",inline=True)
     e.add_field(name="CT · K / A / D",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
@@ -687,6 +694,7 @@ def pending_result_review_view(submission_id):
     view.add_item(discord.ui.Button(label="Принять матч",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"result:approve:{submission_id}"))
     view.add_item(discord.ui.Button(label="Изменить счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"result:editscore:{submission_id}"))
     view.add_item(discord.ui.Button(label="Изменить стату игроков",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"result:editstats:{submission_id}"))
+    view.add_item(discord.ui.Button(label="Изменить ELO",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"result:editelo:{submission_id}"))
     view.add_item(discord.ui.Button(label="Отклонить матч",emoji="❌",style=discord.ButtonStyle.danger,custom_id=f"result:reject:{submission_id}"))
     return view
 
@@ -716,7 +724,10 @@ async def refresh_pending_review_message(message,guild,submission_id):
     submitter=guild.get_member(submission["submitter_id"])
     if not submitter:
         submitter=type("Submitter",(),{"mention":f"<@{submission['submitter_id']}>"})()
-    embed=result_review_embed(submission_id,match_data,analysis,f"{submission['score_a']}:{submission['score_b']}",submitter)
+    default_a,default_b=db.default_elo_deltas(submission['score_a'],submission['score_b'])
+    elo_a=submission.get('elo_a_delta') if submission.get('elo_a_delta') is not None else default_a
+    elo_b=submission.get('elo_b_delta') if submission.get('elo_b_delta') is not None else default_b
+    embed=result_review_embed(submission_id,match_data,analysis,f"{submission['score_a']}:{submission['score_b']}",submitter,elo_a,elo_b)
     if submission.get("screenshot_url"): embed.set_image(url=submission["screenshot_url"])
     await message.edit(embed=embed,view=pending_result_review_view(submission_id))
 
@@ -743,6 +754,33 @@ class PendingResultScoreModal(discord.ui.Modal,title="Изменить счёт 
         await interaction.response.defer(ephemeral=True)
         await refresh_pending_review_message(self.source_message,interaction.guild,self.submission_id)
         await interaction.followup.send(f"✅ Счёт изменён на **{score_a}:{score_b}**.",ephemeral=True)
+
+
+class PendingResultEloModal(discord.ui.Modal,title="Изменить ELO матча"):
+    def __init__(self,submission,source_message):
+        super().__init__(); self.submission_id=submission["id"]; self.source_message=source_message
+        default_a,default_b=db.default_elo_deltas(submission["score_a"],submission["score_b"])
+        current_a=submission.get("elo_a_delta") if submission.get("elo_a_delta") is not None else default_a
+        current_b=submission.get("elo_b_delta") if submission.get("elo_b_delta") is not None else default_b
+        self.elo_a=discord.ui.TextInput(label="ELO каждому игроку команды A",default=str(current_a),placeholder="Например: 25 или -18",max_length=5)
+        self.elo_b=discord.ui.TextInput(label="ELO каждому игроку команды B",default=str(current_b),placeholder="Например: -18 или 25",max_length=5)
+        self.add_item(self.elo_a); self.add_item(self.elo_b)
+
+    async def on_submit(self,interaction):
+        submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
+        if not submission or submission["status"]!="pending" or not match_data:
+            return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
+        if not can_review_result_submission(interaction.user,match_data):
+            return await interaction.response.send_message("У тебя нет доступа к проверке этого матча.",ephemeral=True)
+        try: elo_a=int(str(self.elo_a).strip()); elo_b=int(str(self.elo_b).strip())
+        except ValueError: return await interaction.response.send_message("ELO должно быть целым числом, например `25` или `-18`.",ephemeral=True)
+        if any(abs(value)>500 for value in (elo_a,elo_b)):
+            return await interaction.response.send_message("Изменение ELO должно быть от -500 до +500.",ephemeral=True)
+        if not db.update_pending_submission_elo(self.submission_id,interaction.guild_id,elo_a,elo_b):
+            return await interaction.response.send_message("Не удалось изменить ELO.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await refresh_pending_review_message(self.source_message,interaction.guild,self.submission_id)
+        await interaction.followup.send(f"✅ ELO изменено: команда A **{signed_elo(elo_a)}**, команда B **{signed_elo(elo_b)}**.",ephemeral=True)
 
 
 class PendingPlayerStatsModal(discord.ui.Modal):
@@ -805,7 +843,35 @@ def registered_match_view(match_id):
     view.add_item(discord.ui.Button(label="Счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:score:{match_id}"))
     view.add_item(discord.ui.Button(label="Статистика",emoji="📊",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:stats:{match_id}"))
     view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏��",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
+    view.add_item(discord.ui.Button(label="Изменить ELO",emoji="🏆",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:editelo:{match_id}"))
     return view
+
+
+class FinishedMatchEloModal(discord.ui.Modal,title="Изменить ELO после матча"):
+    def __init__(self,match_data):
+        super().__init__(); self.match_id=match_data["id"]
+        default_a,default_b=db.default_elo_deltas(match_data["score_a"],match_data["score_b"])
+        current_a=match_data.get("elo_a_delta") if match_data.get("elo_a_delta") is not None else default_a
+        current_b=match_data.get("elo_b_delta") if match_data.get("elo_b_delta") is not None else default_b
+        self.elo_a=discord.ui.TextInput(label="ELO каждому игроку команды A",default=str(current_a),max_length=5)
+        self.elo_b=discord.ui.TextInput(label="ELO каждому игроку команды B",default=str(current_b),max_length=5)
+        self.reason=discord.ui.TextInput(label="Причина изменения",default="Исправление начисления ELO",required=False,max_length=200)
+        self.add_item(self.elo_a); self.add_item(self.elo_b); self.add_item(self.reason)
+
+    async def on_submit(self,interaction):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять ELO может только администрация матчей.",ephemeral=True)
+        try: elo_a=int(str(self.elo_a).strip()); elo_b=int(str(self.elo_b).strip())
+        except ValueError: return await interaction.response.send_message("ELO должно быть целым числом.",ephemeral=True)
+        if any(abs(value)>500 for value in (elo_a,elo_b)):
+            return await interaction.response.send_message("Изменение ELO должно быть от -500 до +500.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        result=db.update_finished_match_elo(self.match_id,interaction.guild_id,elo_a,elo_b)
+        if not result: return await interaction.followup.send("Матч не найден или ещё не завершён.",ephemeral=True)
+        reason=str(self.reason).strip() or "Причина не указана"
+        description=f"Матч **#{self.match_id}**\nКоманда A: **{signed_elo(result['old_a'])} → {signed_elo(result['new_a'])}**\nКоманда B: **{signed_elo(result['old_b'])} → {signed_elo(result['new_b'])}**\nПричина: **{reason}**\nИзменил: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"журнал-матчей",f"🏆 Изменено ELO матча #{self.match_id}",description,discord.Color.orange())
+        await interaction.followup.send(f"✅ Начисление ELO матча #{self.match_id} обновлено. Рейтинг всех участников пересчитан.",ephemeral=True)
 
 
 def registered_match_stats_embed(guild,match_id):
@@ -1039,8 +1105,9 @@ async def process_result_submission(interaction,match_id,attachment):
         return await interaction.followup.send("❌ Не удалось уверенно прочитать итоговый счёт. Отправь более чёткий полный скриншот таблицы матча."+error,ephemeral=True)
     final_a,final_b=detected_a,detected_b
     analysis["registered_score"]=[final_a,final_b]
-    submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,final_a,final_b,attachment.url,json.dumps(analysis,ensure_ascii=False))
-    e=result_review_embed(submission_id,match,analysis,f"{final_a}:{final_b}",interaction.user)
+    elo_a_delta,elo_b_delta=db.default_elo_deltas(final_a,final_b)
+    submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,final_a,final_b,attachment.url,json.dumps(analysis,ensure_ascii=False),elo_a_delta,elo_b_delta)
+    e=result_review_embed(submission_id,match,analysis,f"{final_a}:{final_b}",interaction.user,elo_a_delta,elo_b_delta)
     extension="jpg" if "jpeg" in content_type else ("webp" if "webp" in content_type else "png")
     image_name=f"match-{match_id}-result.{extension}"
     e.set_image(url=f"attachment://{image_name}")
@@ -1820,6 +1887,31 @@ class AnticheatWarnModal(discord.ui.Modal,title="Выдать Anticheat warn"):
         await interaction.followup.send(f"✅ {role.mention} выдан участнику {member.mention}.",ephemeral=True)
 
 
+class AdminMatchEloModal(discord.ui.Modal,title="Изменить ELO матча"):
+    match_id=discord.ui.TextInput(label="Номер завершённого матча",placeholder="Например: 24",max_length=10)
+    elo_a=discord.ui.TextInput(label="Новое ELO команды A",placeholder="Например: 25 или -18",max_length=5)
+    elo_b=discord.ui.TextInput(label="Новое ELO команды B",placeholder="Например: -18 или 25",max_length=5)
+    reason=discord.ui.TextInput(label="Причина изменения",default="Исправление начисления ELO",required=False,max_length=200)
+
+    async def on_submit(self,interaction):
+        if not can_register_games(interaction.user):
+            return await interaction.response.send_message("Изменять ELO может только администрация матчей.",ephemeral=True)
+        try:
+            match_id=int(str(self.match_id).strip()); elo_a=int(str(self.elo_a).strip()); elo_b=int(str(self.elo_b).strip())
+        except ValueError:
+            return await interaction.response.send_message("Номер матча и значения ELO должны быть целыми числами.",ephemeral=True)
+        if any(abs(value)>500 for value in (elo_a,elo_b)):
+            return await interaction.response.send_message("Изменение ELO должно быть от -500 до +500.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        result=db.update_finished_match_elo(match_id,interaction.guild_id,elo_a,elo_b)
+        if not result:
+            return await interaction.followup.send("Матч не найден или ещё не завершён.",ephemeral=True)
+        reason=str(self.reason).strip() or "Причина не указана"
+        description=f"Матч **#{match_id}**\nКоманда A: **{signed_elo(result['old_a'])} → {signed_elo(result['new_a'])}**\nКоманда B: **{signed_elo(result['old_b'])} → {signed_elo(result['new_b'])}**\nПричина: **{reason}**\nИзменил: {interaction.user.mention}"
+        await send_staff_log(interaction.guild,"журнал-матчей",f"🏆 Изменено ELO матча #{match_id}",description,discord.Color.orange())
+        await interaction.followup.send(f"✅ ELO матча #{match_id} изменено. Рейтинг всех участников пересчитан.",ephemeral=True)
+
+
 class StaffControlView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
@@ -1861,6 +1953,12 @@ class StaffControlView(discord.ui.View):
             return await i.response.send_message("Эта кнопка доступна только администрации и Games Admin.",ephemeral=True)
         channels=[c.mention for c in i.guild.text_channels if c.name.endswith(("проверка-результатов","регистрация-игр"))]
         await i.response.send_message("Проверка результатов: "+(" · ".join(channels) or "каналы не найдены"),ephemeral=True)
+
+    @discord.ui.button(label="ELO матча",emoji="🏆",style=discord.ButtonStyle.primary,custom_id="staff:match_elo",row=1)
+    async def match_elo(self,i,b):
+        if not can_register_games(i.user):
+            return await i.response.send_message("Эта кнопка доступна только администрации и Games Admin.",ephemeral=True)
+        await i.response.send_modal(AdminMatchEloModal())
 
     @discord.ui.button(label="Тикеты",emoji="🎫",style=discord.ButtonStyle.secondary,custom_id="staff:tickets",row=1)
     async def tickets(self,i,b):
@@ -2096,7 +2194,8 @@ async def create_ticket_from_form(interaction,key,form_values):
         interaction.user:discord.PermissionOverwrite(view_channel=True,send_messages=True,attach_files=True,read_message_history=True),
         guild.me:discord.PermissionOverwrite(view_channel=True,send_messages=True,manage_channels=True,manage_messages=True),
     }
-    oversight_keys=("owner","developer","director","head_admin")
+    # Старшее руководство видит и может брать обращения любого типа.
+    oversight_keys=("owner","developer","director","head_admin","admin")
     for staff_key in dict.fromkeys((*staff_keys,*oversight_keys)):
         role=staff_roles.get(staff_key)
         if role:
@@ -2213,6 +2312,9 @@ TICKET_CLAIM_ROLES={
 
 
 def can_claim_ticket(member,channel):
+    senior_keys=("owner","developer","director","head_admin","admin")
+    if member.id==member.guild.owner_id or any((name:=staff_role_name(key)) and has_role(member,name) for key in senior_keys):
+        return True
     keys=TICKET_CLAIM_ROLES.get(ticket_type_key(channel),())
     return any((name:=staff_role_name(key)) and has_role(member,name) for key in keys)
 
@@ -3242,7 +3344,13 @@ async def on_interaction(interaction):
             return await interaction.response.send_message(f"Статус матча **#{match_id}**: **{match_data['status']}**.",ephemeral=True)
         if action=="score":
             score=f"{match_data['score_a']}:{match_data['score_b']}" if match_data["score_a"] is not None else "не зарегистрирован"
-            return await interaction.response.send_message(f"🔢 Счёт матча **#{match_id}**: **{score}**.",ephemeral=True)
+            elo_text=""
+            if match_data["score_a"] is not None:
+                default_a,default_b=db.default_elo_deltas(match_data["score_a"],match_data["score_b"])
+                elo_a=match_data.get("elo_a_delta") if match_data.get("elo_a_delta") is not None else default_a
+                elo_b=match_data.get("elo_b_delta") if match_data.get("elo_b_delta") is not None else default_b
+                elo_text=f"\n🏆 ELO: команда A **{signed_elo(elo_a)}**, команда B **{signed_elo(elo_b)}**."
+            return await interaction.response.send_message(f"🔢 Счёт матча **#{match_id}**: **{score}**.{elo_text}",ephemeral=True)
         if action=="stats":
             return await interaction.response.send_message(
                 content="Статистика всех игроков с никами. Выбери участника для подробностей.",
@@ -3261,6 +3369,12 @@ async def on_interaction(interaction):
                 view=EditMatchPlayerStatsView(match_id,interaction.user.id),
                 ephemeral=True,
             )
+        if action=="editelo":
+            if not can_register_games(interaction.user):
+                return await interaction.response.send_message("Изменять ELO может только администрация матчей.",ephemeral=True)
+            if match_data["status"]!="finished":
+                return await interaction.response.send_message("Изменять ELO можно только у завершённого матча.",ephemeral=True)
+            return await interaction.response.send_modal(FinishedMatchEloModal(match_data))
         return await interaction.response.send_message("Неизвестное действие.",ephemeral=True)
 
     if cid.startswith("match:getid:"):
@@ -3277,7 +3391,7 @@ async def on_interaction(interaction):
         host_member=interaction.guild.get_member(match_data["host_id"])
         host_name=host_member.mention if host_member else (host_profile.get("nickname") or f"игрок {match_data['host_id']}")
         return await interaction.response.send_message(f"🆔 Standoff 2 ID хоста {host_name}: **{host_game_id}**",ephemeral=True)
-    elif cid.startswith(("result:approve:","result:reject:","result:editscore:","result:editstats:")):
+    elif cid.startswith(("result:approve:","result:reject:","result:editscore:","result:editstats:","result:editelo:")):
         submission_id=int(cid.rsplit(":",1)[1]); action=cid.split(":",2)[1]
         sub=db.submission(submission_id)
         if not sub or sub["status"]!="pending":
@@ -3290,10 +3404,15 @@ async def on_interaction(interaction):
             return await interaction.response.send_modal(PendingResultScoreModal(sub,interaction.message))
         if action=="editstats":
             return await interaction.response.send_message(embed=pending_submission_stats_embed(interaction.guild,sub,match_data),view=PendingPlayerStatsView(submission_id,interaction.user.id,interaction.message),ephemeral=True)
+        if action=="editelo":
+            return await interaction.response.send_modal(PendingResultEloModal(sub,interaction.message))
         await interaction.response.defer()
         approved=action=="approve"
         if approved:
-            if not db.finish_match(sub["match_id"],sub["score_a"],sub["score_b"]):
+            default_a,default_b=db.default_elo_deltas(sub["score_a"],sub["score_b"])
+            elo_a=sub.get("elo_a_delta") if sub.get("elo_a_delta") is not None else default_a
+            elo_b=sub.get("elo_b_delta") if sub.get("elo_b_delta") is not None else default_b
+            if not db.finish_match(sub["match_id"],sub["score_a"],sub["score_b"],elo_a,elo_b):
                 return await interaction.followup.send("Матч уже завершён или не найден.",ephemeral=True)
             db.review_submission(submission_id,"approved",interaction.user.id)
             try:
@@ -3304,7 +3423,7 @@ async def on_interaction(interaction):
             status,clr="✅ принят",discord.Color.green()
             history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
             if history:
-                embed=discord.Embed(title=f"🎮 Матч #{sub['match_id']}",description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nРезультат проверил: {interaction.user.mention}",color=clr)
+                embed=discord.Embed(title=f"🎮 Матч #{sub['match_id']}",description=f"Итоговый счёт: **{sub['score_a']}:{sub['score_b']}**\nELO команды A: **{signed_elo(elo_a)}** каждому\nELO команды B: **{signed_elo(elo_b)}** каждому\nРезультат проверил: {interaction.user.mention}",color=clr)
                 embed.set_image(url=sub["screenshot_url"])
                 await history.send(embed=embed,view=registered_match_view(sub["match_id"]))
         else:

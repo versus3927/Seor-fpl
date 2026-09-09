@@ -32,11 +32,13 @@ def init_db():
           league TEXT NOT NULL, map TEXT NOT NULL, host_id INTEGER NOT NULL,
           team_a TEXT NOT NULL, team_b TEXT NOT NULL,
           score_a INTEGER, score_b INTEGER, lobby_url TEXT,
+          elo_a_delta INTEGER, elo_b_delta INTEGER,
           status TEXT NOT NULL DEFAULT 'waiting', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS result_submissions(
           id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
           match_id INTEGER NOT NULL, submitter_id INTEGER NOT NULL,
           score_a INTEGER NOT NULL, score_b INTEGER NOT NULL,
+          elo_a_delta INTEGER, elo_b_delta INTEGER,
           screenshot_url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
           reviewer_id INTEGER, reason TEXT, analysis_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS config(
@@ -62,6 +64,15 @@ def init_db():
         if "nickname" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN nickname TEXT")
         submission_columns={row[1] for row in con.execute("PRAGMA table_info(result_submissions)")}
         if "analysis_json" not in submission_columns: con.execute("ALTER TABLE result_submissions ADD COLUMN analysis_json TEXT")
+        if "elo_a_delta" not in submission_columns: con.execute("ALTER TABLE result_submissions ADD COLUMN elo_a_delta INTEGER")
+        if "elo_b_delta" not in submission_columns: con.execute("ALTER TABLE result_submissions ADD COLUMN elo_b_delta INTEGER")
+        match_columns={row[1] for row in con.execute("PRAGMA table_info(matches)")}
+        if "elo_a_delta" not in match_columns: con.execute("ALTER TABLE matches ADD COLUMN elo_a_delta INTEGER")
+        if "elo_b_delta" not in match_columns: con.execute("ALTER TABLE matches ADD COLUMN elo_b_delta INTEGER")
+
+def default_elo_deltas(score_a:int,score_b:int):
+    """Return the default signed ELO changes for team A and team B."""
+    return (25,-18) if int(score_a)>int(score_b) else (-18,25)
 
 def ensure_player(guild_id:int, user_id:int):
     with connect() as con:
@@ -204,9 +215,11 @@ def set_lobby(match_id:int,url:str):
     with connect() as con:
         con.execute("UPDATE matches SET lobby_url=?,status='playing' WHERE id=?",(url,match_id))
 
-def create_submission(guild_id:int,match_id:int,submitter_id:int,score_a:int,score_b:int,screenshot_url:str,analysis_json:str|None=None):
+def create_submission(guild_id:int,match_id:int,submitter_id:int,score_a:int,score_b:int,screenshot_url:str,analysis_json:str|None=None,elo_a_delta:int|None=None,elo_b_delta:int|None=None):
+    if elo_a_delta is None or elo_b_delta is None:
+        elo_a_delta,elo_b_delta=default_elo_deltas(score_a,score_b)
     with connect() as con:
-        cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url,analysis_json) VALUES(?,?,?,?,?,?,?)",(guild_id,match_id,submitter_id,score_a,score_b,screenshot_url,analysis_json))
+        cur=con.execute("INSERT INTO result_submissions(guild_id,match_id,submitter_id,score_a,score_b,elo_a_delta,elo_b_delta,screenshot_url,analysis_json) VALUES(?,?,?,?,?,?,?,?,?)",(guild_id,match_id,submitter_id,score_a,score_b,int(elo_a_delta),int(elo_b_delta),screenshot_url,analysis_json))
         return cur.lastrowid
 
 def submission(submission_id:int):
@@ -215,10 +228,18 @@ def submission(submission_id:int):
         return dict(row) if row else None
 
 def update_pending_submission_score(submission_id:int,guild_id:int,score_a:int,score_b:int):
+    elo_a_delta,elo_b_delta=default_elo_deltas(score_a,score_b)
     with connect() as con:
         row=con.execute("SELECT * FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
         if not row: return False
-        con.execute("UPDATE result_submissions SET score_a=?,score_b=? WHERE id=?",(int(score_a),int(score_b),submission_id))
+        con.execute("UPDATE result_submissions SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=? WHERE id=?",(int(score_a),int(score_b),elo_a_delta,elo_b_delta,submission_id))
+        return True
+
+def update_pending_submission_elo(submission_id:int,guild_id:int,elo_a_delta:int,elo_b_delta:int):
+    with connect() as con:
+        row=con.execute("SELECT 1 FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
+        if not row: return False
+        con.execute("UPDATE result_submissions SET elo_a_delta=?,elo_b_delta=? WHERE id=?",(int(elo_a_delta),int(elo_b_delta),submission_id))
         return True
 
 def update_pending_submission_player_stats(submission_id:int,guild_id:int,user_id:int,kills:int,assists:int,deaths:int,mvp:int):
@@ -323,7 +344,10 @@ def update_approved_player_stats(guild_id:int,match_id:int,user_id:int,kills:int
         con.execute("UPDATE result_submissions SET analysis_json=?,reviewer_id=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),editor_id,submission_id))
         return {"old":old,"new":values,"league":match_row['league'],"submission_id":submission_id}
 
-def finish_match(match_id:int,score_a:int,score_b:int):
+def finish_match(match_id:int,score_a:int,score_b:int,elo_a_delta:int|None=None,elo_b_delta:int|None=None):
+    if elo_a_delta is None or elo_b_delta is None:
+        elo_a_delta,elo_b_delta=default_elo_deltas(score_a,score_b)
+    elo_a_delta=int(elo_a_delta); elo_b_delta=int(elo_b_delta)
     with connect() as con:
         m=con.execute("SELECT * FROM matches WHERE id=? AND status!='finished'",(match_id,)).fetchone()
         if not m: return False
@@ -333,14 +357,14 @@ def finish_match(match_id:int,score_a:int,score_b:int):
             con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(m['guild_id'],uid))
             con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(m['guild_id'],uid,m['league']))
         for uid in a:
-            values=(1 if won_a else 0,0 if won_a else 1,25 if won_a else -18)
+            values=(1 if won_a else 0,0 if won_a else 1,elo_a_delta)
             con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         for uid in b:
-            values=(0 if won_a else 1,1 if won_a else 0,-18 if won_a else 25)
+            values=(0 if won_a else 1,1 if won_a else 0,elo_b_delta)
             con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
-        con.execute("UPDATE matches SET score_a=?,score_b=?,status='finished' WHERE id=?",(score_a,score_b,match_id))
+        con.execute("UPDATE matches SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=?,status='finished' WHERE id=?",(score_a,score_b,elo_a_delta,elo_b_delta,match_id))
         return True
 
 def change_finished_match_result(match_id:int,score_a:int,score_b:int,reason:str|None=None):
@@ -351,18 +375,45 @@ def change_finished_match_result(match_id:int,score_a:int,score_b:int,reason:str
         team_b=[int(x) for x in m['team_b'].split(',') if x]
         old_won_a=int(m['score_a'])>int(m['score_b'])
         new_won_a=int(score_a)>int(score_b)
+        old_a_delta=int(m['elo_a_delta']) if m['elo_a_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[0]
+        old_b_delta=int(m['elo_b_delta']) if m['elo_b_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[1]
+        if old_won_a==new_won_a:
+            new_a_delta,new_b_delta=old_a_delta,old_b_delta
+        else:
+            new_a_delta,new_b_delta=default_elo_deltas(score_a,score_b)
         if old_won_a!=new_won_a:
             for uid in team_a:
-                values=(1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,-43 if old_won_a else 43)
+                values=(1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,new_a_delta-old_a_delta)
                 con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
                 con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
             for uid in team_b:
-                values=(0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,43 if old_won_a else -43)
+                values=(0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,new_b_delta-old_b_delta)
                 con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
                 con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
-        con.execute("UPDATE matches SET score_a=?,score_b=? WHERE id=?",(score_a,score_b,match_id))
-        con.execute("UPDATE result_submissions SET score_a=?,score_b=?,reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(score_a,score_b,reason,match_id))
+        con.execute("UPDATE matches SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=? WHERE id=?",(score_a,score_b,new_a_delta,new_b_delta,match_id))
+        con.execute("UPDATE result_submissions SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=?,reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(score_a,score_b,new_a_delta,new_b_delta,reason,match_id))
         return True
+
+def update_finished_match_elo(match_id:int,guild_id:int,elo_a_delta:int,elo_b_delta:int):
+    """Replace the already applied ELO changes for a finished match."""
+    elo_a_delta=int(elo_a_delta); elo_b_delta=int(elo_b_delta)
+    with connect() as con:
+        m=con.execute("SELECT * FROM matches WHERE id=? AND guild_id=? AND status='finished'",(match_id,guild_id)).fetchone()
+        if not m: return None
+        old_a=int(m['elo_a_delta']) if m['elo_a_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[0]
+        old_b=int(m['elo_b_delta']) if m['elo_b_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[1]
+        diff_a=elo_a_delta-old_a; diff_b=elo_b_delta-old_b
+        team_a=[int(x) for x in m['team_a'].split(',') if x]
+        team_b=[int(x) for x in m['team_b'].split(',') if x]
+        for uid in team_a:
+            con.execute("UPDATE players SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(diff_a,guild_id,uid))
+            con.execute("UPDATE player_league_stats SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(diff_a,guild_id,uid,m['league']))
+        for uid in team_b:
+            con.execute("UPDATE players SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(diff_b,guild_id,uid))
+            con.execute("UPDATE player_league_stats SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(diff_b,guild_id,uid,m['league']))
+        con.execute("UPDATE matches SET elo_a_delta=?,elo_b_delta=? WHERE id=?",(elo_a_delta,elo_b_delta,match_id))
+        con.execute("UPDATE result_submissions SET elo_a_delta=?,elo_b_delta=? WHERE guild_id=? AND match_id=? AND status='approved'",(elo_a_delta,elo_b_delta,guild_id,match_id))
+        return {"old_a":old_a,"old_b":old_b,"new_a":elo_a_delta,"new_b":elo_b_delta}
 
 def cancel_finished_match(match_id:int,reason:str|None=None):
     with connect() as con:
@@ -371,12 +422,14 @@ def cancel_finished_match(match_id:int,reason:str|None=None):
         team_a=[int(x) for x in m['team_a'].split(',') if x]
         team_b=[int(x) for x in m['team_b'].split(',') if x]
         won_a=int(m['score_a'])>int(m['score_b'])
+        elo_a_delta=int(m['elo_a_delta']) if m['elo_a_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[0]
+        elo_b_delta=int(m['elo_b_delta']) if m['elo_b_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[1]
         for uid in team_a:
-            values=(1 if won_a else 0,0 if won_a else 1,-25 if won_a else 18)
+            values=(1 if won_a else 0,0 if won_a else 1,-elo_a_delta)
             con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         for uid in team_b:
-            values=(0 if won_a else 1,1 if won_a else 0,18 if won_a else -25)
+            values=(0 if won_a else 1,1 if won_a else 0,-elo_b_delta)
             con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         con.execute("UPDATE matches SET score_a=NULL,score_b=NULL,status='cancelled' WHERE id=?",(match_id,))

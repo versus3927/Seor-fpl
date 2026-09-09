@@ -804,7 +804,7 @@ def registered_match_view(match_id):
     view.add_item(discord.ui.Button(label="Подтвердить результат",emoji="✅",style=discord.ButtonStyle.success,custom_id=f"registeredmatch:confirm:{match_id}"))
     view.add_item(discord.ui.Button(label="Счёт",emoji="🔢",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:score:{match_id}"))
     view.add_item(discord.ui.Button(label="Статистика",emoji="📊",style=discord.ButtonStyle.secondary,custom_id=f"registeredmatch:stats:{match_id}"))
-    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏️",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
+    view.add_item(discord.ui.Button(label="Изменить статистику",emoji="✏��",style=discord.ButtonStyle.primary,custom_id=f"registeredmatch:editstats:{match_id}"))
     return view
 
 
@@ -1209,7 +1209,7 @@ class DashboardPanelView(discord.ui.View):
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
-            return await i.response.send_message("Создавать роли может только владелец сервера или Owner.",ephemeral=True)
+            return await i.response.send_message("Создавать роли м��жет только владелец сервера или Owner.",ephemeral=True)
         await i.response.defer(ephemeral=True,thinking=True)
         await ensure_staff_roles(i.guild)
         await i.followup.send("Служебные ��оли созданы и синхронизированы.",ephemeral=True)
@@ -2029,7 +2029,7 @@ async def ensure_staff_application_system(guild):
             try: await message.delete()
             except discord.HTTPException: pass
     embed=discord.Embed(title="👑 DOMINION STAFF APPLICATIONS",description="Выбери роль и заполни анкету. Заявку увидит только ответственная администрация.",color=discord.Color.purple())
-    embed.add_field(name="Moderator",value="Заявку рассматривают Admin и старшее руководство.",inline=False)
+    embed.add_field(name="Moderator",value="Заявк�� рассматривают Admin и старшее руководство.",inline=False)
     embed.add_field(name="Game Support",value="Заявку рассматривают Game Support и старшее руководство.",inline=False)
     application_banner=BASE_DIR/"assets"/"applications-banner-v2.png"
     if application_banner.exists():
@@ -2115,7 +2115,7 @@ async def create_ticket_from_form(interaction,key,form_values):
         embed.add_field(name=labels.get(field_key,field_key),value=str(value)[:1024],inline=False)
     embed.set_footer(text=f"Автор обращения: {interaction.user.display_name}")
     await channel.send(content=content,embed=embed)
-    control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или ответственный сотрудник может закрыть тикет кнопкой ниже.",color=discord.Color.red())
+    control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или ��тветственный сотрудник может закрыть тикет кнопкой ниже.",color=discord.Color.red())
     await channel.send(embed=control,view=TicketChannelView())
     summary=" · ".join(str(value).replace("\n"," ")[:120] for value in form_values.values())
     await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}\nДанные: {summary}",discord.Color.purple())
@@ -2952,6 +2952,87 @@ async def apply_public_readonly_channels(guild):
     return changed
 
 
+PLAYER_COMMAND_FRAGMENTS=("команды",)
+GENERAL_CHAT_FRAGMENTS=("общий-чат","general-chat")
+LEAGUE_CHAT_FRAGMENTS={
+    "чат-pro-league":"pro",
+    "чат-dominion-ascend":"division",
+    "чат-dominion-rise":"qualifications",
+    "чат-default-league":"default",
+}
+
+
+def normalized_channel_name(channel):
+    return normalized_role_name(channel.name).replace("・","-").replace("_","-").replace(" ","-")
+
+
+def player_write_scope(channel):
+    name=normalized_channel_name(channel)
+    category_name=normalized_role_name(channel.category.name) if channel.category else ""
+    if any(fragment in name for fragment in GENERAL_CHAT_FRAGMENTS):
+        return "general",None
+    league_key=next((key for fragment,key in LEAGUE_CHAT_FRAGMENTS.items() if fragment in name),None)
+    if league_key:
+        return "league",league_key
+    if name.endswith("команды") and "штаб" not in name and "staff" not in category_name:
+        return "commands",None
+    return "staff_only",None
+
+
+async def apply_server_message_policy_to_channel(channel):
+    if not isinstance(channel,discord.TextChannel):
+        return 0
+    guild=channel.guild; changed=0
+    registered=find_role(guild,REGISTERED_ROLE_NAME)
+    scope,league_key=player_write_scope(channel)
+    ordinary_can_write=scope in {"commands","general"}
+    ordinary_values={
+        "send_messages":ordinary_can_write,
+        "add_reactions":ordinary_can_write,
+        "create_public_threads":ordinary_can_write,
+        "create_private_threads":ordinary_can_write,
+        "send_messages_in_threads":ordinary_can_write,
+    }
+    blocked_values={key:False for key in ordinary_values}
+    # @everyone не пишет нигде; зарегистрированные игроки — только в командах и общем чате.
+    changed+=await merge_channel_permissions(channel,guild.default_role,**blocked_values)
+    if registered:
+        changed+=await merge_channel_permissions(channel,registered,**ordinary_values)
+    # Каждая роль лиги пишет только в собственном чате лиги, а не в ranked/новостях/панелях.
+    for candidate_key,role_name in LEAGUE_ROLES.items():
+        league_role=find_role(guild,role_name)
+        if not league_role:
+            continue
+        can_write_here=scope=="league" and league_key==candidate_key
+        values={key:can_write_here for key in ordinary_values}
+        changed+=await merge_channel_permissions(channel,league_role,**values)
+    # Основная администрация может писать во всех доступных ей каналах.
+    admin_names=(
+        STAFF_ROLES["owner"],STAFF_ROLES["admin"],EXTRA_ROLE_SPECS["developer"][0],
+        EXTRA_ROLE_SPECS["director"][0],EXTRA_ROLE_SPECS["head_admin"][0],
+        EXTRA_ROLE_SPECS["moderator"][0],
+    )
+    for role_name in admin_names:
+        role=find_role(guild,role_name)
+        if role:
+            changed+=await merge_channel_permissions(
+                channel,role,send_messages=True,add_reactions=True,
+                create_public_threads=True,create_private_threads=True,send_messages_in_threads=True,
+            )
+    changed+=await merge_channel_permissions(
+        channel,guild.me,send_messages=True,embed_links=True,attach_files=True,
+        add_reactions=True,send_messages_in_threads=True,
+    )
+    return changed
+
+
+async def apply_server_message_policy(guild):
+    changed=0
+    for channel in guild.text_channels:
+        changed+=await apply_server_message_policy_to_channel(channel)
+    return changed
+
+
 async def ensure_admin_panel_channel_name(guild):
     """Точечно переименовать старый канал панели без создания копии."""
     old_name="⌨️・команды-штаба"
@@ -2974,7 +3055,7 @@ async def ensure_dominion_league_chats(guild):
     roles=await ensure_staff_roles(guild)
     registered=find_role(guild,REGISTERED_ROLE_NAME)
     specs={
-        "🔴・чат-pro-league":(("🔴・чат-pro",),"league_pro","curator_pro"),
+        "🔴・ч��т-pro-league":(("🔴・чат-pro",),"league_pro","curator_pro"),
         "🟣・чат-dominion-ascend":(("🟣・чат-division",),"league_division","curator_division"),
         "🟢・чат-dominion-rise":(("🟡・чат-qualifications","🟢・чат-qualifications"),"league_qualifications","curator_qualifications"),
         "⚪・чат-default-league":(("⚪・чат-default",),"league_default",None),
@@ -3055,6 +3136,8 @@ async def on_guild_channel_create(channel):
         await apply_league_channel_privacy(channel.guild)
     if isinstance(channel,discord.TextChannel) and is_public_readonly_channel(channel):
         await apply_public_readonly_channels(channel.guild)
+    if isinstance(channel,discord.TextChannel):
+        await apply_server_message_policy_to_channel(channel)
     await send_staff_log(channel.guild,"журнал-сервера","➕ Создан канал",f"Канал: {channel.mention}\nТип: **{type(channel).__name__}**",discord.Color.green())
 
 
@@ -3345,7 +3428,7 @@ async def party_leave_command(interaction:discord.Interaction):
 bot.tree.add_command(party_group)
 
 
-@bot.tree.command(name="setup",description="Точечно обновить панель и права персонала")
+@bot.tree.command(name="setup",description="Точечно ��бновить панель и права персонала")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 @app_commands.checks.has_permissions(administrator=True)
@@ -3448,6 +3531,8 @@ async def setup(interaction:discord.Interaction):
         elif channel.category and channel.category.name=="🛡️ DOMINION STAFF":
             changed+=await merge_permissions(channel,ticket_support_role,view_channel=False,send_messages=False,use_application_commands=False)
 
+    changed+=await apply_server_message_policy(guild)
+
     panel_embed=discord.Embed(
         title="🎛️ ПАНЕЛЬ АДМИНА",
         description="Все ответы панели видит только сотрудник, который нажал кнопку. Slash-команды можно использовать прямо в этом канале.",
@@ -3476,7 +3561,7 @@ async def setup(interaction:discord.Interaction):
     created_text=(" Созданы роли: **"+", ".join(created)+"**.") if created else ""
     warn_text=f" Создано отсутствующих ролей варнов: **{created_warn_count}**."
     await interaction.followup.send(
-        f"Готово. Панель восстановлена, профильные права обновлены ({changed} изменений).{created_text}{warn_text} Другие категории, каналы, сообщения и права `/setup` не трогал.",
+        f"Готово. Панель восстановлена и обновлено {changed} точечных прав. Обычные игроки могут писать только в командах, общем чате и чатах своих лиг; остальные каналы доступны для записи только администрации и профильным сотрудникам.{created_text}{warn_text} Сообщения и каналы `/setup` не удалял.",
         ephemeral=True,
     )
 

@@ -57,6 +57,11 @@ def init_db():
           deaths INTEGER NOT NULL DEFAULT 0, assists INTEGER NOT NULL DEFAULT 0,
           mvp INTEGER NOT NULL DEFAULT 0, points INTEGER NOT NULL DEFAULT 1000,
           PRIMARY KEY(guild_id,user_id,league));
+        CREATE TABLE IF NOT EXISTS match_player_elo(
+          match_id INTEGER NOT NULL, guild_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL, league TEXT NOT NULL,
+          delta INTEGER NOT NULL,
+          PRIMARY KEY(match_id,user_id));
         """)
         player_columns={row[1] for row in con.execute("PRAGMA table_info(players)")}
         if "assists" not in player_columns: con.execute("ALTER TABLE players ADD COLUMN assists INTEGER NOT NULL DEFAULT 0")
@@ -242,6 +247,25 @@ def update_pending_submission_elo(submission_id:int,guild_id:int,elo_a_delta:int
         con.execute("UPDATE result_submissions SET elo_a_delta=?,elo_b_delta=? WHERE id=?",(int(elo_a_delta),int(elo_b_delta),submission_id))
         return True
 
+def update_pending_submission_analysis(submission_id:int,guild_id:int,analysis:dict):
+    with connect() as con:
+        cur=con.execute("UPDATE result_submissions SET analysis_json=? WHERE id=? AND guild_id=? AND status='pending'",(json.dumps(analysis,ensure_ascii=False),submission_id,guild_id))
+        return cur.rowcount==1
+
+def update_pending_submission_player_elo(submission_id:int,guild_id:int,user_id:int,elo_delta:int):
+    with connect() as con:
+        row=con.execute("SELECT analysis_json FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
+        if not row: return False
+        try: analysis=json.loads(row['analysis_json'] or '{}')
+        except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+        for item in analysis.get('matched_stats',[]):
+            if int(item.get('user_id') or 0)==int(user_id):
+                item['elo_delta']=int(elo_delta)
+                item['elo_manual']=True
+                con.execute("UPDATE result_submissions SET analysis_json=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),submission_id))
+                return True
+        return False
+
 def update_pending_submission_player_stats(submission_id:int,guild_id:int,user_id:int,kills:int,assists:int,deaths:int,mvp:int):
     with connect() as con:
         submission_row=con.execute("SELECT * FROM result_submissions WHERE id=? AND guild_id=? AND status='pending'",(submission_id,guild_id)).fetchone()
@@ -344,7 +368,7 @@ def update_approved_player_stats(guild_id:int,match_id:int,user_id:int,kills:int
         con.execute("UPDATE result_submissions SET analysis_json=?,reviewer_id=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),editor_id,submission_id))
         return {"old":old,"new":values,"league":match_row['league'],"submission_id":submission_id}
 
-def finish_match(match_id:int,score_a:int,score_b:int,elo_a_delta:int|None=None,elo_b_delta:int|None=None):
+def finish_match(match_id:int,score_a:int,score_b:int,elo_a_delta:int|None=None,elo_b_delta:int|None=None,player_elo_changes:dict|None=None):
     if elo_a_delta is None or elo_b_delta is None:
         elo_a_delta,elo_b_delta=default_elo_deltas(score_a,score_b)
     elo_a_delta=int(elo_a_delta); elo_b_delta=int(elo_b_delta)
@@ -357,13 +381,17 @@ def finish_match(match_id:int,score_a:int,score_b:int,elo_a_delta:int|None=None,
             con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(m['guild_id'],uid))
             con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(m['guild_id'],uid,m['league']))
         for uid in a:
-            values=(1 if won_a else 0,0 if won_a else 1,elo_a_delta)
+            player_delta=int((player_elo_changes or {}).get(uid,elo_a_delta))
+            values=(1 if won_a else 0,0 if won_a else 1,player_delta)
             con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
+            con.execute("INSERT OR REPLACE INTO match_player_elo(match_id,guild_id,user_id,league,delta) VALUES(?,?,?,?,?)",(match_id,m['guild_id'],uid,m['league'],player_delta))
         for uid in b:
-            values=(0 if won_a else 1,1 if won_a else 0,elo_b_delta)
+            player_delta=int((player_elo_changes or {}).get(uid,elo_b_delta))
+            values=(0 if won_a else 1,1 if won_a else 0,player_delta)
             con.execute("UPDATE players SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=games+1,wins=wins+?,losses=losses+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
+            con.execute("INSERT OR REPLACE INTO match_player_elo(match_id,guild_id,user_id,league,delta) VALUES(?,?,?,?,?)",(match_id,m['guild_id'],uid,m['league'],player_delta))
         con.execute("UPDATE matches SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=?,status='finished' WHERE id=?",(score_a,score_b,elo_a_delta,elo_b_delta,match_id))
         return True
 
@@ -381,15 +409,22 @@ def change_finished_match_result(match_id:int,score_a:int,score_b:int,reason:str
             new_a_delta,new_b_delta=old_a_delta,old_b_delta
         else:
             new_a_delta,new_b_delta=default_elo_deltas(score_a,score_b)
+        personal={int(row['user_id']):int(row['delta']) for row in con.execute("SELECT user_id,delta FROM match_player_elo WHERE match_id=?",(match_id,))}
         if old_won_a!=new_won_a:
             for uid in team_a:
-                values=(1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,new_a_delta-old_a_delta)
+                old_player_delta=personal.get(uid,old_a_delta)
+                new_player_delta=new_a_delta+(old_player_delta-old_a_delta)
+                values=(1 if old_won_a else 0,1 if new_won_a else 0,0 if old_won_a else 1,0 if new_won_a else 1,new_player_delta-old_player_delta)
                 con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
                 con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
+                con.execute("INSERT OR REPLACE INTO match_player_elo(match_id,guild_id,user_id,league,delta) VALUES(?,?,?,?,?)",(match_id,m['guild_id'],uid,m['league'],new_player_delta))
             for uid in team_b:
-                values=(0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,new_b_delta-old_b_delta)
+                old_player_delta=personal.get(uid,old_b_delta)
+                new_player_delta=new_b_delta+(old_player_delta-old_b_delta)
+                values=(0 if old_won_a else 1,0 if new_won_a else 1,1 if old_won_a else 0,1 if new_won_a else 0,new_player_delta-old_player_delta)
                 con.execute("UPDATE players SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
                 con.execute("UPDATE player_league_stats SET wins=MAX(0,wins-?)+?,losses=MAX(0,losses-?)+?,points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
+                con.execute("INSERT OR REPLACE INTO match_player_elo(match_id,guild_id,user_id,league,delta) VALUES(?,?,?,?,?)",(match_id,m['guild_id'],uid,m['league'],new_player_delta))
         con.execute("UPDATE matches SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=? WHERE id=?",(score_a,score_b,new_a_delta,new_b_delta,match_id))
         con.execute("UPDATE result_submissions SET score_a=?,score_b=?,elo_a_delta=?,elo_b_delta=?,reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(score_a,score_b,new_a_delta,new_b_delta,reason,match_id))
         return True
@@ -415,6 +450,38 @@ def update_finished_match_elo(match_id:int,guild_id:int,elo_a_delta:int,elo_b_de
         con.execute("UPDATE result_submissions SET elo_a_delta=?,elo_b_delta=? WHERE guild_id=? AND match_id=? AND status='approved'",(elo_a_delta,elo_b_delta,guild_id,match_id))
         return {"old_a":old_a,"old_b":old_b,"new_a":elo_a_delta,"new_b":elo_b_delta}
 
+def match_elo_changes(guild_id:int,match_id:int):
+    with connect() as con:
+        return {int(row['user_id']):int(row['delta']) for row in con.execute("SELECT user_id,delta FROM match_player_elo WHERE guild_id=? AND match_id=?",(guild_id,match_id))}
+
+def update_finished_player_elo(match_id:int,guild_id:int,user_id:int,new_delta:int):
+    new_delta=int(new_delta)
+    with connect() as con:
+        m=con.execute("SELECT * FROM matches WHERE id=? AND guild_id=? AND status='finished'",(match_id,guild_id)).fetchone()
+        if not m: return None
+        team_a={int(x) for x in m['team_a'].split(',') if x}
+        participants=team_a|{int(x) for x in m['team_b'].split(',') if x}
+        if int(user_id) not in participants: return None
+        row=con.execute("SELECT delta FROM match_player_elo WHERE match_id=? AND user_id=?",(match_id,user_id)).fetchone()
+        if row:
+            old_delta=int(row['delta'])
+        else:
+            default_a,default_b=default_elo_deltas(m['score_a'],m['score_b'])
+            old_delta=int((m['elo_a_delta'] if m['elo_a_delta'] is not None else default_a) if user_id in team_a else (m['elo_b_delta'] if m['elo_b_delta'] is not None else default_b))
+        diff=new_delta-old_delta
+        con.execute("UPDATE players SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(diff,guild_id,user_id))
+        con.execute("UPDATE player_league_stats SET points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(diff,guild_id,user_id,m['league']))
+        con.execute("INSERT OR REPLACE INTO match_player_elo(match_id,guild_id,user_id,league,delta) VALUES(?,?,?,?,?)",(match_id,guild_id,user_id,m['league'],new_delta))
+        submission=con.execute("SELECT id,analysis_json FROM result_submissions WHERE guild_id=? AND match_id=? AND status='approved' ORDER BY id DESC LIMIT 1",(guild_id,match_id)).fetchone()
+        if submission:
+            try: analysis=json.loads(submission['analysis_json'] or '{}')
+            except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+            for item in analysis.get('matched_stats',[]):
+                if int(item.get('user_id') or 0)==int(user_id):
+                    item['elo_delta']=new_delta; item['elo_manual']=True; break
+            con.execute("UPDATE result_submissions SET analysis_json=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),submission['id']))
+        return {"old":old_delta,"new":new_delta,"difference":diff,"league":m['league']}
+
 def cancel_finished_match(match_id:int,reason:str|None=None):
     with connect() as con:
         m=con.execute("SELECT * FROM matches WHERE id=? AND status='finished'",(match_id,)).fetchone()
@@ -424,14 +491,16 @@ def cancel_finished_match(match_id:int,reason:str|None=None):
         won_a=int(m['score_a'])>int(m['score_b'])
         elo_a_delta=int(m['elo_a_delta']) if m['elo_a_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[0]
         elo_b_delta=int(m['elo_b_delta']) if m['elo_b_delta'] is not None else default_elo_deltas(m['score_a'],m['score_b'])[1]
+        personal={int(row['user_id']):int(row['delta']) for row in con.execute("SELECT user_id,delta FROM match_player_elo WHERE match_id=?",(match_id,))}
         for uid in team_a:
-            values=(1 if won_a else 0,0 if won_a else 1,-elo_a_delta)
+            values=(1 if won_a else 0,0 if won_a else 1,-personal.get(uid,elo_a_delta))
             con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         for uid in team_b:
-            values=(0 if won_a else 1,1 if won_a else 0,-elo_b_delta)
+            values=(0 if won_a else 1,1 if won_a else 0,-personal.get(uid,elo_b_delta))
             con.execute("UPDATE players SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=?",(*values,m['guild_id'],uid))
             con.execute("UPDATE player_league_stats SET games=MAX(0,games-1),wins=MAX(0,wins-?),losses=MAX(0,losses-?),points=MAX(0,points+?) WHERE guild_id=? AND user_id=? AND league=?",(*values,m['guild_id'],uid,m['league']))
         con.execute("UPDATE matches SET score_a=NULL,score_b=NULL,status='cancelled' WHERE id=?",(match_id,))
         con.execute("UPDATE result_submissions SET status='cancelled',reason=COALESCE(?,reason) WHERE match_id=? AND status='approved'",(reason,match_id))
+        con.execute("DELETE FROM match_player_elo WHERE match_id=?",(match_id,))
         return True

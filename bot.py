@@ -32,6 +32,7 @@ BOT_NAME = os.getenv("BOT_NAME", "Dominion FACEIT")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
+MATCH_RETENTION_DAYS = max(1, int(os.getenv("MATCH_RETENTION_DAYS", "3")))
 LEAGUES = {
     "Default": ("⚪", 1000),
     "Qualifications": ("🟢", 1150),
@@ -3356,12 +3357,26 @@ async def migrate_dominion_branding(guild):
                     except discord.HTTPException: pass
 
 
+async def match_database_cleanup_loop():
+    while not bot.is_closed():
+        try:
+            deleted=db.cleanup_old_matches(MATCH_RETENTION_DAYS)
+            if deleted:
+                print(f"Database cleanup: deleted {deleted} matches older than {MATCH_RETENTION_DAYS} days",flush=True)
+        except Exception as exc:
+            print(f"Database cleanup error: {exc!r}",flush=True)
+        await asyncio.sleep(3600)
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} ready")
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
     for guild in bot.guilds:
         await ensure_admin_panel_buttons(guild)
+    cleanup_task=getattr(bot,"_match_cleanup_task",None)
+    if cleanup_task is None or cleanup_task.done():
+        bot._match_cleanup_task=asyncio.create_task(match_database_cleanup_loop())
 
 
 @bot.event

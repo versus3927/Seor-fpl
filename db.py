@@ -297,6 +297,22 @@ def recent_matches(guild_id:int,limit:int=10):
     with connect() as con:
         return [dict(x) for x in con.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit))]
 
+def cleanup_old_matches(retention_days:int=3):
+    """Delete match records older than the retention window without changing player totals."""
+    days=max(1,int(retention_days))
+    modifier=f"-{days} days"
+    with connect() as con:
+        old_ids=[int(row[0]) for row in con.execute(
+            "SELECT id FROM matches WHERE datetime(created_at) < datetime('now', ?)",(modifier,)
+        ).fetchall()]
+        if not old_ids:
+            return 0
+        placeholders=','.join('?' for _ in old_ids)
+        con.execute(f"DELETE FROM match_player_elo WHERE match_id IN ({placeholders})",old_ids)
+        con.execute(f"DELETE FROM result_submissions WHERE match_id IN ({placeholders})",old_ids)
+        con.execute(f"DELETE FROM matches WHERE id IN ({placeholders})",old_ids)
+        return len(old_ids)
+
 def league_player(guild_id:int,user_id:int,league:str):
     with connect() as con:
         con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(guild_id,user_id,league))

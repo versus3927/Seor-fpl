@@ -482,10 +482,9 @@ def registration_embed(member=None):
 class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
     def __init__(self):
         super().__init__()
-        self.nickname=discord.ui.TextInput(placeholder="Например: Versus",min_length=2,max_length=24)
-        self.game_id=discord.ui.TextInput(placeholder="Например: 245507174",min_length=5,max_length=30)
-        self.add_item(discord.ui.Label(text="Игровой ник",description="Ник в Standoff 2",component=self.nickname))
-        self.add_item(discord.ui.Label(text="Standoff 2 ID",description="Только цифры, минимум 5",component=self.game_id))
+        self.nickname=discord.ui.TextInput(label="Игровой ник",placeholder="Например: Versus",min_length=2,max_length=24)
+        self.game_id=discord.ui.TextInput(label="Standoff 2 ID",placeholder="Например: 245507174",min_length=5,max_length=30)
+        self.add_item(self.nickname); self.add_item(self.game_id)
     async def on_submit(self, interaction):
         value=str(self.game_id).strip()
         nickname=str(self.nickname).strip()
@@ -522,10 +521,9 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
 class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
     def __init__(self):
         super().__init__()
-        self.nickname=discord.ui.TextInput(placeholder="Ник из старого профиля",min_length=2,max_length=24)
-        self.game_id=discord.ui.TextInput(placeholder="ID из старого профиля",min_length=5,max_length=30)
-        self.add_item(discord.ui.Label(text="Игровой ник",description="Ник из сохранённого профиля",component=self.nickname))
-        self.add_item(discord.ui.Label(text="Standoff 2 ID",description="ID из сохранённого профиля",component=self.game_id))
+        self.nickname=discord.ui.TextInput(label="Игровой ник",placeholder="Ник из старого профиля",min_length=2,max_length=24)
+        self.game_id=discord.ui.TextInput(label="Standoff 2 ID",placeholder="ID из старого профиля",min_length=5,max_length=30)
+        self.add_item(self.nickname); self.add_item(self.game_id)
 
     async def on_submit(self, interaction):
         nickname=str(self.nickname).strip()
@@ -1280,7 +1278,7 @@ async def process_result_submission(interaction,match_id,attachment):
         )
         embed.set_image(url=attachment.url)
         await review.send(content="🚨 **ВНИМАНИЕ: игрок отправил результат матча, которого не было.**",embed=embed,view=pending_result_review_view(submission_id))
-        return await interaction.followup.send("✅ Скриншот отправлен администрации. Бот предупредил администраторов, что матча с таким номером не было.",ephemeral=True)
+        return await interaction.followup.send("✅ Скриншот отправлен администрации.",ephemeral=True)
     players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
     if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
         return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
@@ -3093,11 +3091,12 @@ async def finalize_match(lobby,text,members,a,b,league,host,map_name):
     match_id=db.create_match(lobby.guild.id,league,map_name,host.id,[x.id for x in a],[x.id for x in b])
     everyone=lobby.guild.default_role
     def overwrites(team):
-        o={everyone:discord.PermissionOverwrite(view_channel=False,connect=False),lobby.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,move_members=True)}
-        staff_names=(STAFF_ROLES["owner"],STAFF_ROLES["admin"],STAFF_ROLES.get(f"curator_{league.lower()}"))
-        for role_name in staff_names:
-            role=discord.utils.get(lobby.guild.roles,name=role_name) if role_name else None
-            if role: o[role]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True,move_members=True,mute_members=True)
+        # Комнату видит только назначенная команда и бот. Даже служебным ролям
+        # отдельный доступ не выдаётся, чтобы случайные участники не заходили.
+        o={
+            everyone:discord.PermissionOverwrite(view_channel=False,connect=False,speak=False),
+            lobby.guild.me:discord.PermissionOverwrite(view_channel=True,connect=True,move_members=True),
+        }
         for m in team:o[m]=discord.PermissionOverwrite(view_channel=True,connect=True,speak=True)
         return o
     va=await lobby.guild.create_voice_channel(f"🛡 CT · #{match_id}",category=lobby.category,overwrites=overwrites(a),user_limit=5)
@@ -3201,7 +3200,7 @@ async def give_default_league_to_registered(guild):
 
 
 async def require_registration_for_members_without_game_id(guild):
-    """Remove only the registration role from incomplete profiles and show registration again."""
+    """Remove only the registration role from incomplete profiles without sending deploy-time DMs."""
     try:
         await asyncio.wait_for(guild.chunk(cache=True),timeout=30)
     except (asyncio.TimeoutError,discord.HTTPException):
@@ -3220,10 +3219,6 @@ async def require_registration_for_members_without_game_id(guild):
         try:
             await member.remove_roles(registered,reason="DOMINION: отсутствует Standoff 2 ID")
             result["fixed"]+=1
-            try:
-                await member.send(embed=registration_embed(member),view=RegistrationView())
-            except discord.HTTPException:
-                pass
         except (discord.Forbidden,discord.HTTPException) as exc:
             result["failed"]+=1
             print(f"Incomplete registration cleanup error for {member} ({member.id}): {exc!r}",flush=True)
@@ -3695,16 +3690,8 @@ async def on_interaction(interaction):
         return await handle_staff_application_review(interaction,cid)
     if cid in {"seor:registration:start","seor:registration:login"}:
         try:
-            profile=db.player(interaction.guild_id,interaction.user.id)
-            has_registered_role=has_role(interaction.user,REGISTERED_ROLE_NAME)
-            has_saved_profile=bool(profile.get("game_id") and profile.get("nickname"))
-            if cid.endswith(":start"):
-                if has_registered_role:
-                    return await interaction.response.send_message("Ты уже зарегистрирован. Для смены ID используй `/set_game_id` в канале команд.",ephemeral=True)
-                if has_saved_profile:
-                    return await interaction.response.send_message("Твой профиль уже сохранён. После повторного входа на сервер нажми **«Войти по данным»** и укажи старый ник и Standoff 2 ID — ELO и статистика восстановятся.",ephemeral=True)
-            elif has_registered_role:
-                return await interaction.response.send_message("Ты уже вошёл в профиль DOMINION.",ephemeral=True)
+            # Не обращаемся к базе до открытия окна: форма должна открываться
+            # даже при первой регистрации и во время миграции старой SQLite.
             modal=GameIdModal() if cid.endswith(":start") else LoginByDataModal()
             return await interaction.response.send_modal(modal)
         except Exception as exc:
@@ -3864,6 +3851,19 @@ async def delete_empty_match_room(channel):
 @bot.event
 async def on_voice_state_update(member,before,after):
     if member.bot: return
+
+    if after.channel and after.channel.name.startswith(("🛡 CT · #","💣 T · #")):
+        match_number=re.search(r"#(\d+)$",after.channel.name)
+        match_data=guild_match(member.guild.id,int(match_number.group(1))) if match_number else None
+        if match_data:
+            side="team_a" if after.channel.name.startswith("🛡 CT") else "team_b"
+            allowed={int(value) for value in str(match_data.get(side) or "").split(",") if value}
+            if member.id not in allowed:
+                try: await member.move_to(None,reason="DOMINION: закрытая командная комната")
+                except discord.HTTPException: pass
+                try: await member.send("Эта голосовая комната скрыта и доступна только игрокам назначенной команды.")
+                except discord.HTTPException: pass
+                return
 
     # Выход или переход в другой голосовой канал во время пиков карт — timeout на 10 минут.
     if (before.channel and before.channel.id in active_veto

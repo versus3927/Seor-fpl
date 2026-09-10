@@ -282,7 +282,7 @@ def update_pending_submission_player_stats(submission_id:int,guild_id:int,user_i
         if current is None:
             current={"user_id":user_id}
             matched.append(current)
-        current.update({"kills":max(0,int(kills)),"assists":max(0,int(assists)),"deaths":max(0,int(deaths)),"mvp":max(0,int(mvp))})
+        current.update({"kills":max(0,int(kills)),"assists":max(0,int(assists)),"deaths":max(0,int(deaths)),"mvp":max(0,int(mvp)),"manual_stats_entered":True})
         analysis['matched_stats']=matched
         analysis['recognized_players']=len([item for item in matched if item.get('user_id')])
         con.execute("UPDATE result_submissions SET analysis_json=? WHERE id=?",(json.dumps(analysis,ensure_ascii=False),submission_id))

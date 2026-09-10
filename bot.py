@@ -290,7 +290,7 @@ def can_use_role_panel(member):
 async def command_channel_access(interaction):
     if not interaction.guild:
         return False
-    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛������・панель-админа"]
+    allowed_channels=[c for c in interaction.guild.text_channels if c.name.endswith("команды") or c.name=="🎛️・панель-админа"]
     return not allowed_channels or bool(interaction.channel and interaction.channel.id in {c.id for c in allowed_channels})
 
 
@@ -377,7 +377,7 @@ def queue_embed(channel):
         description=f"{emoji} **Очередь открыта.** Зайдите в голосовой канал, чтобы участвовать.\n\n**Подтверждённые игроки:** `{len(members)}/{LOBBY_SIZE}`\n**Голосовой канал:** {channel.mention}\n\n**В очереди**\n{lines}\n\n**До старта:** `{max(0, LOBBY_SIZE-len(members))}`",
         color=color(),
     )
-    e.set_footer(text="Матч до 13 победных раундов · очередь ������бновляется автоматически")
+    e.set_footer(text="Матч до 13 победных раундов · очередь обновляется автоматически")
     return e
 
 
@@ -511,8 +511,8 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
             await interaction.user.add_roles(default_role,reason="DOMINION: автоматическая Default League после регистрации")
         except discord.Forbidden:
             return await interaction.followup.send("Регистрация завершена, но Discord не дал выдать Default League. Подними роль бота выше роли Default League.",ephemeral=True)
-        db.set_points(interaction.guild_id,interaction.user.id,STARTING_ELO)
-        await interaction.followup.send(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}** · роль **default League** · **{STARTING_ELO} ELO**.",ephemeral=True)
+        saved=db.player(interaction.guild_id,interaction.user.id)
+        await interaction.followup.send(f"✅ Регистрация завершена. Ник: **{nickname}** · Game ID: **{value}** · роль **default League** · **{saved['points']} ELO**. Остальная статистика профиля сохранена.",ephemeral=True)
 
 
 class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
@@ -702,6 +702,10 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter,elo_a
     e.add_field(name="T · K / A / D",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
     notes=[]
     if analysis.get("notes"): notes.append(str(analysis["notes"]))
+    if analysis.get("model")=="manual-entry":
+        manual_players=[item for item in analysis.get("matched_stats",[]) if item.get("user_id")]
+        completed=sum(1 for item in manual_players if item.get("manual_stats_entered"))
+        notes.append(f"Ручное заполнение статистики: **{completed}/{len(manual_players) or 10}** игроков. До принятия укажи счёт и заполни всех участников.")
     absent_ids=analysis.get("absent_players",[])
     if absent_ids: notes.append("Нет на финальном скрине — записано K/A/D 0/0/13: "+", ".join(f"<@{uid}>" for uid in absent_ids))
     if unmatched: notes.append("Не привязаны: "+", ".join(unmatched))
@@ -1232,7 +1236,21 @@ async def process_result_submission(interaction,match_id,attachment):
                 error=" Модель из настроек недоступна. Укажи `GEMINI_VISION_MODEL=gemini-2.5-flash` и проверь `GEMINI_API_KEY`."
             else:
                 error=" Сервис распознавания временно не смог обработать изображение. Повтори отправку."
-        return await interaction.followup.send("❌ Не удалось уверенно прочитать итоговый счёт. Отправь более чёткий полный скриншот таблицы матча."+error,ephemeral=True)
+        manual={"model":"manual-entry","confidence":0,"notes":"AI не распознал скриншот. Администратору нужно вручную заполнить счёт и статистику всех игроков.","matched_stats":[]}
+        team_a={int(value) for value in match["team_a"].split(",") if value}
+        for user_id in players:
+            member=interaction.guild.get_member(user_id); profile=db.player(interaction.guild_id,user_id)
+            manual["matched_stats"].append({
+                "user_id":user_id,"name":profile.get("nickname") or (member.display_name if member else f"Игрок {user_id}"),
+                "game_id":str(profile.get("game_id") or ""),"team":"A" if user_id in team_a else "B",
+                "kills":0,"assists":0,"deaths":0,"mvp":0,"manual_stats_entered":False,
+            })
+        submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,0,0,attachment.url,json.dumps(manual,ensure_ascii=False),0,0)
+        embed=result_review_embed(submission_id,match,manual,"0:0",interaction.user,0,0)
+        embed.description=(embed.description or "")+"\n\n⚠️ **Ручной режим:** администрация должна изменить счёт и заполнить статистику всех 10 игроков."
+        embed.set_image(url=attachment.url)
+        await review.send(embed=embed,view=pending_result_review_view(submission_id))
+        return await interaction.followup.send("✅ Скриншот и номер игры отправлены администрации. AI не распознал данные, поэтому счёт и статистику игроков администрация заполнит вручную — от тебя больше ничего не требуется.",ephemeral=True)
     final_a,final_b=detected_a,detected_b
     analysis["registered_score"]=[final_a,final_b]
     assign_personal_elo(match,final_a,final_b,analysis,preserve_manual=False)
@@ -1244,6 +1262,48 @@ async def process_result_submission(interaction,match_id,attachment):
     e.set_image(url=f"attachment://{image_name}")
     await review.send(embed=e,view=pending_result_review_view(submission_id),file=discord.File(io.BytesIO(image_bytes),filename=image_name))
     await interaction.followup.send(f"✅ Скриншот распознан. Результат №{submission_id} отправлен модераторам.",ephemeral=True)
+
+
+def manual_result_view(submission_id):
+    view=discord.ui.View(timeout=1800)
+    view.add_item(discord.ui.Button(label="Ввести вручную",emoji="⌨️",style=discord.ButtonStyle.primary,custom_id=f"result:manual:{submission_id}"))
+    return view
+
+
+class ManualResultScoreModal(discord.ui.Modal,title="Ручной ввод результата"):
+    def __init__(self,submission_id):
+        super().__init__(); self.submission_id=submission_id
+        self.score_a=discord.ui.TextInput(label="Счёт команды A / CT",placeholder="13",max_length=2)
+        self.score_b=discord.ui.TextInput(label="Счёт команды B / T",placeholder="9",max_length=2)
+        self.add_item(self.score_a); self.add_item(self.score_b)
+    async def on_submit(self,interaction):
+        submission=db.submission(self.submission_id)
+        if not submission or submission["status"]!="pending":
+            return await interaction.response.send_message("Черновик результата уже обработан или не найден.",ephemeral=True)
+        match_data=guild_match(interaction.guild_id,submission["match_id"])
+        if not match_data:
+            return await interaction.response.send_message("Матч не найден.",ephemeral=True)
+        participants={int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value}
+        if interaction.user.id not in participants and not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("Ручной результат может отправить участник матча или администрация.",ephemeral=True)
+        try: score_a=int(str(self.score_a).strip()); score_b=int(str(self.score_b).strip())
+        except ValueError: return await interaction.response.send_message("Счёт должен состоять из чисел.",ephemeral=True)
+        if score_a<0 or score_b<0 or score_a==score_b or max(score_a,score_b)!=13:
+            return await interaction.response.send_message("Победитель должен иметь 13 раундов, ничья недопустима.",ephemeral=True)
+        if not db.update_pending_submission_score(self.submission_id,interaction.guild_id,score_a,score_b):
+            return await interaction.response.send_message("Не удалось сохранить ручной счёт.",ephemeral=True)
+        submission=db.submission(self.submission_id)
+        try: analysis=json.loads(submission.get("analysis_json") or "{}")
+        except (TypeError,ValueError,json.JSONDecodeError): analysis={"matched_stats":[]}
+        assign_personal_elo(match_data,score_a,score_b,analysis,preserve_manual=False)
+        db.update_pending_submission_analysis(self.submission_id,interaction.guild_id,analysis)
+        review=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("регистрация-игр")),None)
+        if not review: return await interaction.response.send_message("Канал `регистрация-игр` не найден. Выполни `/setup`.",ephemeral=True)
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        embed=result_review_embed(self.submission_id,match_data,analysis,f"{score_a}:{score_b}",interaction.user,*db.default_elo_deltas(score_a,score_b))
+        embed.set_image(url=submission["screenshot_url"])
+        await review.send(embed=embed,view=pending_result_review_view(self.submission_id))
+        await interaction.followup.send("✅ Ручной счёт сохранён. Заявка отправлена администрации — теперь нужно заполнить статистику каждого игрока кнопкой **«Изменить статистику»**.",ephemeral=True)
 
 
 class GameLookupModal(discord.ui.Modal, title="Поиск профиля"):
@@ -1348,7 +1408,7 @@ class DashboardPanelView(discord.ui.View):
         elif section=="party":
             self._button("Создать пати","➕",discord.ButtonStyle.success,self.party_create)
             self._button("Моё пати","👥",discord.ButtonStyle.primary,self.party_show)
-            self._button("Покинуть","��",discord.ButtonStyle.danger,self.party_leave)
+            self._button("Покинуть","🚪",discord.ButtonStyle.danger,self.party_leave)
         elif section=="account":
             self._button("Изменить игровой ID","🪪",discord.ButtonStyle.primary,self.change_id)
             self._button("Данные аккаунта","📋",discord.ButtonStyle.secondary,self.account)
@@ -1403,14 +1463,14 @@ class DashboardPanelView(discord.ui.View):
     async def role_panel(self,i):
         if not can_use_role_panel(i.user):
             return await i.response.send_message("У тебя нет доступа к управлению ролями.",ephemeral=True)
-        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступны�� ��ействия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
+        await i.response.send_message(embed=discord.Embed(title="🛡️ Управление ролями",description="Выбери участника и роль, затем нажми **Выдать** или **Снять**. Доступные действия ограничены иерархией персонала.",color=color()),view=RolePanelView(i.user),ephemeral=True)
 
     async def create_roles(self,i):
         if not can_manage_staff(i.user):
-            return await i.response.send_message("Создавать роли м��жет только владелец сервера или Owner.",ephemeral=True)
+            return await i.response.send_message("Создавать роли может только владелец сервера или Owner.",ephemeral=True)
         await i.response.defer(ephemeral=True,thinking=True)
         await ensure_staff_roles(i.guild)
-        await i.followup.send("Служебные ��оли созданы и синхронизированы.",ephemeral=True)
+        await i.followup.send("Служебные роли созданы и синхронизированы.",ephemeral=True)
 
 
 class StaffMemberSelect(discord.ui.UserSelect):
@@ -1436,7 +1496,7 @@ class StaffRoleSelect(discord.ui.Select):
         self.placeholder=f"Роль: {selected}"[:150]
         member=interaction.guild.get_member(self.view.target_id) if self.view.target_id else None
         who=member.mention if member else "сначала выбери участника"
-        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник: {who}\n��оль: **{selected}**\nНажми **Выдать** или **Снять**.",color=color())
+        embed=discord.Embed(title="🛡️ Управление ролями",description=f"Участник: {who}\nРоль: **{selected}**\nНажми **Выдать** или **Снять**.",color=color())
         await interaction.response.edit_message(embed=embed,view=self.view)
 
 
@@ -1650,7 +1710,7 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
         if not member: return await interaction.response.send_message("Участник не найден.",ephemeral=True)
         action=str(self.action).strip().lower(); reason=str(self.reason).strip()
         if action not in {"timeout","kick","ban"}:
-            return await interaction.response.send_message("Дейст��ие: `timeout`, `kick` или `ban`. Для варна используй выбор типа варна в панели.",ephemeral=True)
+            return await interaction.response.send_message("Действие: `timeout`, `kick` или `ban`. Для варна используй выбор типа варна в панели.",ephemeral=True)
         if action in {"kick","ban"} and not can_administer(interaction.user):
             return await interaction.response.send_message("Kick и ban доступны только старшей администрации.",ephemeral=True)
         await interaction.response.defer(ephemeral=True,thinking=True)
@@ -1663,7 +1723,7 @@ class SanctionModal(discord.ui.Modal,title="Выдать санкцию"):
         except (discord.Forbidden,discord.HTTPException,ValueError):
             return await interaction.followup.send("Не удалось применить санкцию. Проверь права и длительность.",ephemeral=True)
         sanction_description=f"Участник: {member.mention}\nДействие: **{action}**\nПричина: {reason}\nАдминистратор: {interaction.user.mention}"
-        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применен��",sanction_description,discord.Color.orange())
+        await send_staff_log(interaction.guild,"общий-журнал","⚖️ Санкция применена",sanction_description,discord.Color.orange())
         await send_punishment_log(interaction.guild,"⚖️ Санкция применена",sanction_description,discord.Color.orange())
         await interaction.followup.send(f"✅ Санкция **{action}** применена к {member.mention}.",ephemeral=True)
 
@@ -1939,7 +1999,7 @@ class RemoveSanctionView(discord.ui.View):
             try:
                 await member.remove_roles(*removable,reason=f"DOMINION FACEIT warnings removed by {interaction.user}")
             except discord.Forbidden:
-                return await interaction.followup.send("Не удалось снять роли варн��в. Подними роль бота выше них.",ephemeral=True)
+                return await interaction.followup.send("Не удалось снять роли варнов. Подними роль бота выше них.",ephemeral=True)
             removed_text=", ".join(role.name for role in removable)
         removal_description=f"Участник: {member.mention}\nСнято: **{removed_text}**\nАдминистратор: {interaction.user.mention}"
         await send_staff_log(interaction.guild,"общий-журнал","♻️ Санкция снята",removal_description,discord.Color.green())
@@ -1956,7 +2016,7 @@ class RemoveSanctionView(discord.ui.View):
 class MatchAdminModal(discord.ui.Modal,title="Управление матчем"):
     match_id=discord.ui.TextInput(label="Номер матча",max_length=10)
     action=discord.ui.TextInput(label="Действие",placeholder="info или finish",max_length=10)
-    score=discord.ui.TextInput(label="��чёт для finish",placeholder="13:9",required=False,max_length=7)
+    score=discord.ui.TextInput(label="Счёт для finish",placeholder="13:9",required=False,max_length=7)
     async def on_submit(self,interaction):
         try: match_id=int(str(self.match_id)); match=db.match(match_id)
         except ValueError: match=None
@@ -2103,7 +2163,7 @@ class StaffControlView(discord.ui.View):
         if not can_answer_tickets(i.user):
             return await i.response.send_message("Тикеты доступны только Ticket Support и старшей администрации.",ephemeral=True)
         tickets=[c.mention for c in i.guild.text_channels if (c.topic or "").startswith("ticket-owner:")]
-        await i.response.send_message("��ткрытые тикеты:\n"+("\n".join(tickets) or "Нет открытых тикетов."),ephemeral=True)
+        await i.response.send_message("Открытые тикеты:\n"+("\n".join(tickets) or "Нет открытых тикетов."),ephemeral=True)
 
     @discord.ui.button(label="Закрыть тикет",emoji="🔒",style=discord.ButtonStyle.danger,custom_id="staff:close_ticket",row=1)
     async def close_ticket(self,i,b):
@@ -2234,7 +2294,7 @@ async def ensure_staff_application_system(guild):
         if application_type=="ticket_support" and roles.get("ticket_admin"):
             overwrites[roles["ticket_admin"]]=discord.PermissionOverwrite(view_channel=True,send_messages=True,read_message_history=True)
         if not channel:
-            channel=await guild.create_text_channel(channel_name,category=staff_category,overwrites=overwrites,reason="DOMINION /setup: ��аявки на роли")
+            channel=await guild.create_text_channel(channel_name,category=staff_category,overwrites=overwrites,reason="DOMINION /setup: заявки на роли")
         else:
             for target,overwrite in overwrites.items():
                 await channel.set_permissions(target,overwrite=overwrite)
@@ -2265,7 +2325,7 @@ async def ensure_staff_application_system(guild):
             try: await message.delete()
             except discord.HTTPException: pass
     embed=discord.Embed(title="👑 DOMINION STAFF APPLICATIONS",description="Выбери роль и заполни анкету. Заявку увидит только ответственная администрация.",color=discord.Color.purple())
-    embed.add_field(name="Moderator",value="Заявк�� рассматривают Admin и старшее руководство.",inline=False)
+    embed.add_field(name="Moderator",value="Заявку рассматривают Admin и старшее руководство.",inline=False)
     embed.add_field(name="Game Support",value="Заявку рассматривают Game Support и старшее руководство.",inline=False)
     application_banner=BASE_DIR/"assets"/"applications-banner-v2.png"
     if application_banner.exists():
@@ -2352,7 +2412,7 @@ async def create_ticket_from_form(interaction,key,form_values):
         embed.add_field(name=labels.get(field_key,field_key),value=str(value)[:1024],inline=False)
     embed.set_footer(text=f"Автор обращения: {interaction.user.display_name}")
     await channel.send(content=content,embed=embed)
-    control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или ��тветственный сотрудник может закрыть тикет кнопкой ниже.",color=discord.Color.red())
+    control=discord.Embed(title="🔒 Управление тикетом",description="Автор обращения или ответственный сотрудник может закрыть тикет кнопкой ниже.",color=discord.Color.red())
     await channel.send(embed=control,view=TicketChannelView())
     summary=" · ".join(str(value).replace("\n"," ")[:120] for value in form_values.values())
     await send_staff_log(guild,"журнал-тикетов","🎫 Создан новый тикет",f"Раздел: **{title}**\nАвтор: {interaction.user.mention}\nКанал: {channel.mention}\nДанные: {summary}",discord.Color.purple())
@@ -2499,7 +2559,7 @@ async def ensure_ticket_inbox(guild):
         if role:
             overwrites[role]=discord.PermissionOverwrite(view_channel=True,send_messages=False,read_message_history=True)
     channel=await guild.create_text_channel(channel_name,category=category,overwrites=overwrites,reason="DOMINION FACEIT: входящие тикеты")
-    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="��юда поступают уведомления обо всех новых обращениях. Открыть сам тикет смо��ут только профильные сотрудники и старшее руководство.",color=color())
+    intro=discord.Embed(title="🎫 ВХОДЯЩИЕ ТИКЕТЫ",description="Сюда поступают уведомления обо всех новых обращениях. Открыть сам тикет смогут только профильные сотрудники и старшее руководство.",color=color())
     await channel.send(embed=intro)
     return channel
 
@@ -2566,7 +2626,7 @@ class TicketChannelView(discord.ui.View):
         if not isinstance(interaction.channel,discord.TextChannel) or ticket_owner_id(interaction.channel) is None:
             return await interaction.response.send_message("Эта кнопка работает только внутри тикета.",ephemeral=True)
         if not can_close_ticket(interaction.user,interaction.channel):
-            return await interaction.response.send_message("Закрыть тикет может его автор или сотр��дник админ��страции.",ephemeral=True)
+            return await interaction.response.send_message("Закрыть тикет может его автор или сотрудник администрации.",ephemeral=True)
         await interaction.response.send_modal(CloseCurrentTicketModal())
 
 
@@ -2782,7 +2842,7 @@ class MapVetoView(discord.ui.View):
         if not selected:
             e.add_field(name="⏱️ Таймер",value=f"{MAP_VETO_TIMEOUT} сек.",inline=False)
             e.add_field(name="История банов",value=log,inline=False)
-        e.set_footer(text=f"DOMINION MAP VETO • {league_display_name(self.league)} • остал��сь карт: {len(self.remaining)}")
+        e.set_footer(text=f"DOMINION MAP VETO • {league_display_name(self.league)} • осталось карт: {len(self.remaining)}")
         return e
 
 
@@ -3026,6 +3086,36 @@ async def give_default_league_to_registered(guild):
     return stats
 
 
+async def require_registration_for_members_without_game_id(guild):
+    """Remove only the registration role from incomplete profiles and show registration again."""
+    try:
+        await asyncio.wait_for(guild.chunk(cache=True),timeout=30)
+    except (asyncio.TimeoutError,discord.HTTPException):
+        pass
+    registered=find_role(guild,REGISTERED_ROLE_NAME)
+    if not registered:
+        return {"checked":0,"fixed":0,"failed":0}
+    result={"checked":0,"fixed":0,"failed":0}
+    for member in guild.members:
+        if member.bot or registered not in member.roles:
+            continue
+        result["checked"]+=1
+        profile=db.player(guild.id,member.id)
+        if str(profile.get("game_id") or "").strip():
+            continue
+        try:
+            await member.remove_roles(registered,reason="DOMINION: отсутствует Standoff 2 ID")
+            result["fixed"]+=1
+            try:
+                await member.send(embed=registration_embed(member),view=RegistrationView())
+            except discord.HTTPException:
+                pass
+        except (discord.Forbidden,discord.HTTPException) as exc:
+            result["failed"]+=1
+            print(f"Incomplete registration cleanup error for {member} ({member.id}): {exc!r}",flush=True)
+    return result
+
+
 async def apply_overwrite_if_changed(target,role,**values):
     desired=discord.PermissionOverwrite(**values)
     if target.overwrites_for(role).pair()!=desired.pair():
@@ -3225,6 +3315,14 @@ async def apply_server_message_policy_to_channel(channel):
         return 0
     guild=channel.guild; changed=0
     registered=find_role(guild,REGISTERED_ROLE_NAME)
+    channel_name=normalized_channel_name(channel)
+    if re.fullmatch(r"ranked(?:-\d+)?",channel_name):
+        blocked={"send_messages":False,"add_reactions":False,"create_public_threads":False,"create_private_threads":False,"send_messages_in_threads":False}
+        for role in guild.roles:
+            if role.is_default() or role!=guild.me.top_role:
+                changed+=await merge_channel_permissions(channel,role,**blocked)
+        changed+=await merge_channel_permissions(channel,guild.me,send_messages=True,embed_links=True,attach_files=True,add_reactions=True,send_messages_in_threads=True)
+        return changed
     scope,league_key=player_write_scope(channel)
     ordinary_can_write=scope in {"commands","general"}
     ordinary_values={
@@ -3296,7 +3394,7 @@ async def ensure_dominion_league_chats(guild):
     roles=await ensure_staff_roles(guild)
     registered=find_role(guild,REGISTERED_ROLE_NAME)
     specs={
-        "🔴・ч��т-pro-league":(("🔴・чат-pro",),"league_pro","curator_pro"),
+        "🔴・чат-pro-league":(("🔴・чат-pro",),"league_pro","curator_pro"),
         "🟣・чат-dominion-ascend":(("🟣・чат-division",),"league_division","curator_division"),
         "🟢・чат-dominion-rise":(("🟡・чат-qualifications","🟢・чат-qualifications"),"league_qualifications","curator_qualifications"),
         "⚪・чат-default-league":(("⚪・чат-default",),"league_default",None),
@@ -3374,6 +3472,10 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(f"очередь: {LOBBY_SIZE} игроков"))
     for guild in bot.guilds:
         await ensure_admin_panel_buttons(guild)
+        registration_fix=await require_registration_for_members_without_game_id(guild)
+        if registration_fix["fixed"]:
+            print(f"Registration cleanup in {guild.name}: {registration_fix}",flush=True)
+        await apply_server_message_policy(guild)
     cleanup_task=getattr(bot,"_match_cleanup_task",None)
     if cleanup_task is None or cleanup_task.done():
         bot._match_cleanup_task=asyncio.create_task(match_database_cleanup_loop())
@@ -3400,7 +3502,7 @@ async def on_guild_channel_create(channel):
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    await send_staff_log(channel.guild,"журнал-сервера","➖ Удалён кан��л",f"Название: **{channel.name}**\nID: `{channel.id}`",discord.Color.orange())
+    await send_staff_log(channel.guild,"журнал-сервера","➖ Удалён канал",f"Название: **{channel.name}**\nID: `{channel.id}`",discord.Color.orange())
 
 
 @bot.event
@@ -3483,7 +3585,7 @@ async def on_interaction(interaction):
     if cid.startswith("party:accept:") or cid.startswith("party:decline:"):
         _,action,party_id,target_id=cid.split(":")
         if interaction.user.id!=int(target_id):
-            return await interaction.response.send_message("Это приглаш��ние предназначено другому участнику.",ephemeral=True)
+            return await interaction.response.send_message("Это приглашение предназначено другому участнику.",ephemeral=True)
         if action=="decline":
             return await interaction.response.edit_message(content="❌ Приглашение отклонено.",embed=None,view=None)
         result=db.add_party_member(interaction.guild_id,int(party_id),interaction.user.id)
@@ -3491,6 +3593,13 @@ async def on_interaction(interaction):
         if result!="ok": return await interaction.response.send_message(messages.get(result,"Не удалось вступить в пати."),ephemeral=True)
         party=db.party_for_user(interaction.guild_id,interaction.user.id)
         return await interaction.response.edit_message(content=f"✅ {interaction.user.mention} вступил в пати!",embed=party_embed(party),view=None)
+    if cid.startswith("result:manual:"):
+        try: submission_id=int(cid.rsplit(":",1)[1])
+        except (ValueError,TypeError): return await interaction.response.send_message("Некорректный черновик результата.",ephemeral=True)
+        submission=db.submission(submission_id)
+        if not submission or submission["status"]!="pending":
+            return await interaction.response.send_message("Черновик уже обработан или не найден.",ephemeral=True)
+        return await interaction.response.send_modal(ManualResultScoreModal(submission_id))
     if cid.startswith("registeredmatch:"):
         try:
             _,action,match_id_raw=cid.split(":",2)
@@ -3549,10 +3658,9 @@ async def on_interaction(interaction):
         host_profile=db.player(interaction.guild_id,match_data["host_id"])
         host_game_id=str(host_profile.get("game_id") or "").strip()
         if not host_game_id:
-            return await interaction.response.send_message("У хоста не ��казан Standoff 2 ID. Хосту нужно добавить его через регистрацию или `/set_game_id`.",ephemeral=True)
-        host_member=interaction.guild.get_member(match_data["host_id"])
-        host_name=host_member.mention if host_member else (host_profile.get("nickname") or f"игрок {match_data['host_id']}")
-        return await interaction.response.send_message(f"🆔 Standoff 2 ID хоста {host_name}: **{host_game_id}**",ephemeral=True)
+            return await interaction.response.send_message("У хоста не указан Standoff 2 ID. Хосту нужно добавить его через регистрацию или `/set_game_id`.",ephemeral=True)
+        # Сообщение содержит только цифры, чтобы «Копировать текст» копировало чистый ID.
+        return await interaction.response.send_message(host_game_id,ephemeral=True)
     elif cid.startswith(("result:approve:","result:reject:","result:editscore:","result:editstats:","result:editelo:")):
         submission_id=int(cid.rsplit(":",1)[1]); action=cid.split(":",2)[1]
         sub=db.submission(submission_id)
@@ -3571,11 +3679,19 @@ async def on_interaction(interaction):
         await interaction.response.defer()
         approved=action=="approve"
         if approved:
+            valid_score=((sub["score_a"]==13 or sub["score_b"]==13) and sub["score_a"]!=sub["score_b"] and min(sub["score_a"],sub["score_b"])>=0)
+            if not valid_score:
+                return await interaction.followup.send("Сначала нажми **«Изменить счёт»** и вручную укажи правильный итоговый счёт.",ephemeral=True)
             default_a,default_b=db.default_elo_deltas(sub["score_a"],sub["score_b"])
             elo_a=sub.get("elo_a_delta") if sub.get("elo_a_delta") is not None else default_a
             elo_b=sub.get("elo_b_delta") if sub.get("elo_b_delta") is not None else default_b
             try: analysis=json.loads(sub.get("analysis_json") or "{}")
             except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+            if analysis.get("model")=="manual-entry":
+                missing=[item for item in analysis.get("matched_stats",[]) if item.get("user_id") and not item.get("manual_stats_entered")]
+                if missing:
+                    missing_names=", ".join(str(item.get("name") or item.get("user_id")) for item in missing[:10])
+                    return await interaction.followup.send(f"Сначала заполни статистику всех игроков кнопкой **«Изменить статистику»**. Не заполнены: {missing_names}.",ephemeral=True)
             personal_elo={int(item["user_id"]):int(item["elo_delta"]) for item in analysis.get("matched_stats",[]) if item.get("user_id") and item.get("elo_delta") is not None}
             if not db.finish_match(sub["match_id"],sub["score_a"],sub["score_b"],elo_a,elo_b,personal_elo):
                 return await interaction.followup.send("Матч уже завершён или не найден.",ephemeral=True)
@@ -3628,7 +3744,7 @@ async def on_voice_state_update(member,before,after):
                 reason="DOMINION FACEIT: выход из Lobby во время пиков карт",
             )
             try:
-                await member.send("Ты получил мут / timeout на **10 мин��т** за выход из Lobby во время пиков карт.")
+                await member.send("Ты получил мут / timeout на **10 минут** за выход из Lobby во время пиков карт.")
             except discord.HTTPException:
                 pass
             await send_staff_log(
@@ -3650,7 +3766,7 @@ async def on_voice_state_update(member,before,after):
         if ch and is_lobby(ch): await update_queue(ch)
     if before.channel and before.channel.id in room_owners and not before.channel.members:
         room_owners.pop(before.channel.id,None)
-        await before.channel.delete(reason="��риватная ��омната опустела")
+        await before.channel.delete(reason="Приватная комната опустела")
     if after.channel and after.channel.name.startswith(("🛡 CT · #","💣 T · #")):
         old_task=match_room_cleanup.pop(after.channel.id,None)
         if old_task: old_task.cancel()
@@ -3712,7 +3828,7 @@ async def party_leave_command(interaction:discord.Interaction):
 bot.tree.add_command(party_group)
 
 
-@bot.tree.command(name="setup",description="Точечно ��бновить панель и права персонала")
+@bot.tree.command(name="setup",description="Точечно обновить панель и права персонала")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 @app_commands.checks.has_permissions(administrator=True)
@@ -3860,11 +3976,11 @@ async def sync_default_league(interaction:discord.Interaction):
     stats=await give_default_league_to_registered(interaction.guild)
     default_role=await default_league_role(interaction.guild)
     if not default_role:
-        return await interaction.followup.send("Не ��айдена роль `Default League`.",ephemeral=True)
+        return await interaction.followup.send("Не найдена роль `Default League`.",ephemeral=True)
     if stats["hierarchy"]:
         return await interaction.followup.send("Discord запрещает выдачу: подними роль бота **выше `Default League`** в настройках ролей сервера, затем повтори команду.",ephemeral=True)
     await interaction.followup.send(
-        f"Синхронизация завершена. Загружено участников: **{stats['members']}** · с профилем в базе: **{stats['registered']}** · уже имели Default League: **{stats['already']}** · выдано: **{stats['assigned']}** �� ошибок: **{stats['failed']}**.",
+        f"Синхронизация завершена. Загружено участников: **{stats['members']}** · с профилем в базе: **{stats['registered']}** · уже имели Default League: **{stats['already']}** · выдано: **{stats['assigned']}** · ошибок: **{stats['failed']}**.",
         ephemeral=True,
     )
 
@@ -3907,7 +4023,7 @@ async def league_role_command(interaction:discord.Interaction,member:discord.Mem
     await interaction.followup.send(text,ephemeral=True)
 
 
-@bot.tree.command(name="roles_setup",description="Создать или восстановить служе��ные роли")
+@bot.tree.command(name="roles_setup",description="Создать или восстановить служебные роли")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(command_channel_access)
 async def roles_setup(interaction:discord.Interaction):
@@ -4064,7 +4180,7 @@ async def set_nickname(interaction:discord.Interaction,member:discord.Member,nic
         return await interaction.response.send_message("Команда доступна только владельцу и администрации DOMINION.",ephemeral=True)
     nickname=nickname.strip()
     if not 2 <= len(nickname) <= 32:
-        return await interaction.response.send_message("��ик должен содержать от 2 до 32 символов.",ephemeral=True)
+        return await interaction.response.send_message("Ник должен содержать от 2 до 32 символов.",ephemeral=True)
     if member.id==interaction.guild.owner_id:
         return await interaction.response.send_message("Discord не разрешает боту менять ник владельца сервера.",ephemeral=True)
     await interaction.response.defer(ephemeral=True,thinking=True)
@@ -4109,7 +4225,7 @@ async def match_change_result(interaction:discord.Interaction,match_id:int,score
     old_score=f"{match_data['score_a']}:{match_data['score_b']}"
     await interaction.response.defer(ephemeral=True,thinking=True)
     if not db.change_finished_match_result(match_id,score_a,score_b,reason[:300]):
-        return await interaction.followup.send("Не удалось изменить результа�� матча.",ephemeral=True)
+        return await interaction.followup.send("Не удалось изменить результат матча.",ephemeral=True)
     history=next((channel for channel in interaction.guild.text_channels if channel.name.endswith("история-игр")),None)
     embed=discord.Embed(title=f"✏️ Результат матча #{match_id} изменён",description=f"Было: **{old_score}**\nСтало: **{score_a}:{score_b}**\nПричина: **{reason[:300]}**\nИзменил: {interaction.user.mention}",color=discord.Color.orange())
     if history:

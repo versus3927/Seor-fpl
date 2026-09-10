@@ -1257,28 +1257,49 @@ async def process_result_submission(interaction,match_id,attachment):
     if not review:
         return await interaction.followup.send("Канал `регистрация-игр` не найден. Администратору нужно повторно выполнить `/setup`.",ephemeral=True)
     if not match or match.get("status")=="unverified":
+        # Не блокируем Gemini, если номер матча отсутствует в локальной БД.
+        # ИИ всё равно считывает счёт, карту, ники и статистику со скриншота.
+        # Такой результат остаётся unverified: без сохранённого состава нельзя
+        # безопасно привязать найденные ники к Discord-профилям и начислить ELO.
         if not match:
             profile=db.player(interaction.guild_id,interaction.user.id)
             league_name=member_current_league(interaction.user) if profile else "Default"
             match=db.create_unverified_match(match_id,interaction.guild_id,league_name,interaction.user.id)
-        analysis={
-            "model":"missing-match",
-            "match_missing":True,
-            "notes":"Матч с таким номером отсутствовал в базе и среди недавних сообщений ranked.",
-            "matched_stats":[],
-        }
-        submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,0,0,attachment.url,json.dumps(analysis,ensure_ascii=False),0,0)
-        embed=result_review_embed(submission_id,match,analysis,"не указан",interaction.user,0,0)
-        embed.title=f"🚨 МАТЧА #{match_id} НЕ БЫЛО"
-        embed.color=discord.Color.red()
+        try:
+            image_bytes=await attachment.read()
+            analysis=await analyze_screenshot(image_bytes,content_type or "image/png")
+        except Exception as exc:
+            analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"players":[]}
+
+        analysis["match_missing"]=True
+        analysis["matched_stats"]=[dict(item) for item in analysis.get("players",[]) if isinstance(item,dict)]
+        analysis["recognized_players"]=len(analysis["matched_stats"])
+        missing_note="Номер матча отсутствует в базе и среди недавних сообщений ranked. Скриншот распознан без привязки игроков к Discord."
+        analysis["notes"]=(str(analysis.get("notes") or "")+" "+missing_note).strip()
+
+        detected_a,detected_b=analysis.get("score_a"),analysis.get("score_b")
+        detected_valid=(
+            isinstance(detected_a,int) and isinstance(detected_b,int)
+            and (detected_a==13 or detected_b==13) and detected_a!=detected_b
+            and min(detected_a,detected_b)>=0
+        )
+        score_a,score_b=(detected_a,detected_b) if detected_valid else (0,0)
+        final_score=f"{score_a}:{score_b}" if detected_valid else "не распознан"
+        submission_id=db.create_submission(
+            interaction.guild_id,match_id,interaction.user.id,score_a,score_b,
+            attachment.url,json.dumps(analysis,ensure_ascii=False),0,0,
+        )
+        embed=result_review_embed(submission_id,match,analysis,final_score,interaction.user,0,0)
+        embed.title=f"⚠️ НЕИЗВЕСТНЫЙ МАТЧ #{match_id} · СКРИНШОТ РАСПОЗНАН"
+        embed.color=discord.Color.orange()
         embed.description=(
-            "⚠️ **Матч с таким номером не найден ни в базе, ни в каналах ranked.**\n"
-            "Игрок всё равно отправил скриншот. Проверь изображение вручную. Такую заявку нельзя принять как обычный матч — её можно только отклонить.\n\n"
+            "Матч не найден в базе, но ИИ обработал скриншот. Проверь счёт и статистику вручную. "
+            "Автоматическое начисление ELO отключено, пока состав матча не привязан к профилям.\n\n"
             +(embed.description or "")
         )
         embed.set_image(url=attachment.url)
-        await review.send(content="🚨 **ВНИМАНИЕ: игрок отправил результат матча, которого не было.**",embed=embed,view=pending_result_review_view(submission_id))
-        return await interaction.followup.send("✅ Скриншот отправлен администрации.",ephemeral=True)
+        await review.send(content="⚠️ **Получен результат неизвестного матча — скриншот обработан ИИ.**",embed=embed,view=pending_result_review_view(submission_id))
+        return await interaction.followup.send("✅ Скриншот распознан и отправлен администрации.",ephemeral=True)
     players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
     if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
         return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)

@@ -480,8 +480,12 @@ def registration_embed(member=None):
 
 
 class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
-    nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Например: Versus", min_length=2, max_length=24)
-    game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="Например: 245507174", max_length=30)
+    def __init__(self):
+        super().__init__()
+        self.nickname=discord.ui.TextInput(placeholder="Например: Versus",min_length=2,max_length=24)
+        self.game_id=discord.ui.TextInput(placeholder="Например: 245507174",min_length=5,max_length=30)
+        self.add_item(discord.ui.Label(text="Игровой ник",description="Ник в Standoff 2",component=self.nickname))
+        self.add_item(discord.ui.Label(text="Standoff 2 ID",description="Только цифры, минимум 5",component=self.game_id))
     async def on_submit(self, interaction):
         value=str(self.game_id).strip()
         nickname=str(self.nickname).strip()
@@ -516,8 +520,12 @@ class GameIdModal(discord.ui.Modal, title="Регистрация DOMINION"):
 
 
 class LoginByDataModal(discord.ui.Modal, title="Вход в DOMINION FACEIT"):
-    nickname = discord.ui.TextInput(label="Игровой ник", placeholder="Ник из старого профиля", min_length=2, max_length=24)
-    game_id = discord.ui.TextInput(label="Standoff 2 ID", placeholder="ID из старого профиля", max_length=30)
+    def __init__(self):
+        super().__init__()
+        self.nickname=discord.ui.TextInput(placeholder="Ник из старого профиля",min_length=2,max_length=24)
+        self.game_id=discord.ui.TextInput(placeholder="ID из старого профиля",min_length=5,max_length=30)
+        self.add_item(discord.ui.Label(text="Игровой ник",description="Ник из сохранённого профиля",component=self.nickname))
+        self.add_item(discord.ui.Label(text="Standoff 2 ID",description="ID из сохранённого профиля",component=self.game_id))
 
     async def on_submit(self, interaction):
         nickname=str(self.nickname).strip()
@@ -1204,19 +1212,78 @@ class ResultSubmitModal(discord.ui.Modal, title="Отправка результ
         await process_result_submission(interaction,match_id,self.screenshot_upload.values[0])
 
 
+async def recover_match_from_ranked(guild,match_id):
+    """Recover a recent match from the bot's ranked card if the DB was moved or reset."""
+    cutoff=datetime.now(timezone.utc)-timedelta(days=MATCH_RETENTION_DAYS)
+    title_pattern=re.compile(rf"Матч\s*#\s*{int(match_id)}\b",re.IGNORECASE)
+    for channel in guild.text_channels:
+        if not re.fullmatch(r"ranked(?:-\d+)?",normalized_channel_name(channel)):
+            continue
+        try:
+            async for message in channel.history(limit=100):
+                if message.created_at<cutoff:
+                    break
+                if not message.author.bot:
+                    continue
+                for embed in message.embeds:
+                    if not title_pattern.search(embed.title or ""):
+                        continue
+                    description=embed.description or ""
+                    map_match=re.search(r"Карта:\s*\*\*([^*]+)\*\*",description,re.IGNORECASE)
+                    host_match=re.search(r"Хост:\s*<@!?(\d+)>",description,re.IGNORECASE)
+                    fields={str(field.name).upper():str(field.value) for field in embed.fields}
+                    ct_field=next((value for name,value in fields.items() if "CT" in name),"")
+                    t_field=next((value for name,value in fields.items() if name.strip().endswith("T") and "CT" not in name),"")
+                    team_a=[int(value) for value in re.findall(r"<@!?(\d+)>",ct_field)]
+                    team_b=[int(value) for value in re.findall(r"<@!?(\d+)>",t_field)]
+                    league=league_of(channel)
+                    if not map_match or not host_match or not league or not team_a or not team_b:
+                        continue
+                    restored=db.restore_match(int(match_id),guild.id,league,map_match.group(1).strip(),int(host_match.group(1)),team_a,team_b)
+                    if restored:
+                        print(f"Recovered match #{match_id} from Discord channel #{channel.name}",flush=True)
+                        return restored
+        except (discord.Forbidden,discord.HTTPException):
+            continue
+    return None
+
+
 async def process_result_submission(interaction,match_id,attachment):
     match=guild_match(interaction.guild_id,match_id)
     if not match:
-        return await interaction.followup.send("Игры с таким номером нет.",ephemeral=True)
-    players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
-    if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
-        return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
+        match=await recover_match_from_ranked(interaction.guild,match_id)
     content_type=(attachment.content_type or "").lower()
     if not content_type.startswith("image/") and not attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp")):
         return await interaction.followup.send("Прикрепи скриншот в формате PNG, JPG или WEBP.",ephemeral=True)
     review=next((c for c in interaction.guild.text_channels if c.name.endswith("регистрация-игр")),None)
     if not review:
         return await interaction.followup.send("Канал `регистрация-игр` не найден. Администратору нужно повторно выполнить `/setup`.",ephemeral=True)
+    if not match or match.get("status")=="unverified":
+        if not match:
+            profile=db.player(interaction.guild_id,interaction.user.id)
+            league_name=member_current_league(interaction.user) if profile else "Default"
+            match=db.create_unverified_match(match_id,interaction.guild_id,league_name,interaction.user.id)
+        analysis={
+            "model":"missing-match",
+            "match_missing":True,
+            "notes":"Матч с таким номером отсутствовал в базе и среди недавних сообщений ranked.",
+            "matched_stats":[],
+        }
+        submission_id=db.create_submission(interaction.guild_id,match_id,interaction.user.id,0,0,attachment.url,json.dumps(analysis,ensure_ascii=False),0,0)
+        embed=result_review_embed(submission_id,match,analysis,"не указан",interaction.user,0,0)
+        embed.title=f"🚨 МАТЧА #{match_id} НЕ БЫЛО"
+        embed.color=discord.Color.red()
+        embed.description=(
+            "⚠️ **Матч с таким номером не найден ни в базе, ни в каналах ranked.**\n"
+            "Игрок всё равно отправил скриншот. Проверь изображение вручную. Такую заявку нельзя принять как обычный матч — её можно только отклонить.\n\n"
+            +(embed.description or "")
+        )
+        embed.set_image(url=attachment.url)
+        await review.send(content="🚨 **ВНИМАНИЕ: игрок отправил результат матча, которого не было.**",embed=embed,view=pending_result_review_view(submission_id))
+        return await interaction.followup.send("✅ Скриншот отправлен администрации. Бот предупредил администраторов, что матча с таким номером не было.",ephemeral=True)
+    players={int(x) for x in (match["team_a"]+","+match["team_b"]).split(",") if x}
+    if interaction.user.id not in players and not interaction.user.guild_permissions.manage_guild:
+        return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
     try:
         image_bytes=await attachment.read()
         analysis=await analyze_screenshot(image_bytes,content_type or "image/png")
@@ -1316,13 +1383,9 @@ class GameLookupModal(discord.ui.Modal, title="Поиск профиля"):
         await interaction.response.defer(ephemeral=True,thinking=True)
         member=interaction.guild.get_member(p["user_id"])
         name=p.get("nickname") or (member.display_name if member else f"Игрок {p['user_id']}")
-        recent=[]
-        for match in db.recent_matches(interaction.guild_id,50):
-            ids=set((match["team_a"]+","+match["team_b"]).split(","))
-            if str(p["user_id"]) in ids: recent.append(match)
         avatar_url=str(member.display_avatar.with_size(256).url) if member else ""
         league_profile,league_name=league_profile_data(interaction.guild_id,p,member)
-        recent=[match for match in recent if match["league"]==league_name]
+        recent=profile_recent_matches(interaction.guild_id,p["user_id"],league_name,league_profile["games"])
         card=await build_profile_card(league_profile,name,avatar_url,recent,build_profile_meta(interaction.guild,league_profile,member,league_name))
         await interaction.followup.send(file=discord.File(card,"profile.png"),ephemeral=True)
 
@@ -2761,15 +2824,43 @@ def build_profile_meta(guild,player_data,member=None,league_name=None):
     return {"position":position or "—","joined_date":joined_date,"league_top":top,"league":league_name}
 
 
+def profile_recent_matches(guild_id,user_id,league_name,games_limit):
+    """Return only unique finished matches, capped by the authoritative games counter."""
+    recent=[]; seen=set(); maximum=max(0,int(games_limit))
+    if maximum==0:
+        return recent
+    for match in db.recent_matches(guild_id,100):
+        match_id=int(match["id"])
+        if match_id in seen or match.get("status")!="finished" or match.get("league")!=league_name:
+            continue
+        participants={int(value) for value in (match["team_a"]+","+match["team_b"]).split(",") if value}
+        if int(user_id) not in participants or match.get("score_a") is None or match.get("score_b") is None:
+            continue
+        seen.add(match_id)
+        enriched=dict(match)
+        submission=db.approved_submission_for_match(guild_id,match_id)
+        if submission:
+            try:
+                analysis=json.loads(submission.get("analysis_json") or "{}")
+                item=next((row for row in analysis.get("matched_stats",[]) if int(row.get("user_id") or 0)==int(user_id)),None)
+                if item:
+                    enriched["player_kills"]=int(item.get("kills",0))
+                    enriched["player_deaths"]=int(item.get("deaths",0))
+                    enriched["player_assists"]=int(item.get("assists",0))
+            except (TypeError,ValueError,json.JSONDecodeError):
+                pass
+        recent.append(enriched)
+        if len(recent)>=maximum:
+            break
+    return recent
+
+
 async def send_profile(interaction,member=None):
     await interaction.response.defer(ephemeral=True, thinking=True)
     member=member or interaction.user
     p = db.player(interaction.guild_id, member.id)
     league_profile,league_name=league_profile_data(interaction.guild_id,p,member)
-    recent=[]
-    for m in db.recent_matches(interaction.guild_id,50):
-        ids=set((m["team_a"]+","+m["team_b"]).split(","))
-        if str(member.id) in ids and m["league"]==league_name: recent.append(m)
+    recent=profile_recent_matches(interaction.guild_id,member.id,league_name,league_profile["games"])
     avatar_url=member.display_avatar.with_size(256).url
     card=await build_profile_card(league_profile,p.get("nickname") or member.display_name,str(avatar_url),recent,build_profile_meta(interaction.guild,league_profile,member,league_name))
     view=None
@@ -3679,14 +3770,16 @@ async def on_interaction(interaction):
         await interaction.response.defer()
         approved=action=="approve"
         if approved:
+            try: analysis=json.loads(sub.get("analysis_json") or "{}")
+            except (TypeError,ValueError,json.JSONDecodeError): analysis={}
+            if analysis.get("match_missing"):
+                return await interaction.followup.send("Эту заявку нельзя принять: бот не нашёл такой матч ни в базе, ни в каналах ranked. Проверь скриншот и отклони заявку.",ephemeral=True)
             valid_score=((sub["score_a"]==13 or sub["score_b"]==13) and sub["score_a"]!=sub["score_b"] and min(sub["score_a"],sub["score_b"])>=0)
             if not valid_score:
                 return await interaction.followup.send("Сначала нажми **«Изменить счёт»** и вручную укажи правильный итоговый счёт.",ephemeral=True)
             default_a,default_b=db.default_elo_deltas(sub["score_a"],sub["score_b"])
             elo_a=sub.get("elo_a_delta") if sub.get("elo_a_delta") is not None else default_a
             elo_b=sub.get("elo_b_delta") if sub.get("elo_b_delta") is not None else default_b
-            try: analysis=json.loads(sub.get("analysis_json") or "{}")
-            except (TypeError,ValueError,json.JSONDecodeError): analysis={}
             if analysis.get("model")=="manual-entry":
                 missing=[item for item in analysis.get("matched_stats",[]) if item.get("user_id") and not item.get("manual_stats_entered")]
                 if missing:

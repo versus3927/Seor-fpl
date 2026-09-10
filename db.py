@@ -212,6 +212,32 @@ def create_match(guild_id,league,map_name,host_id,team_a,team_b):
         cur=con.execute("INSERT INTO matches(guild_id,league,map,host_id,team_a,team_b) VALUES(?,?,?,?,?,?)",(guild_id,league,map_name,host_id,','.join(map(str,team_a)),','.join(map(str,team_b))))
         return cur.lastrowid
 
+def restore_match(match_id:int,guild_id:int,league:str,map_name:str,host_id:int,team_a:list[int],team_b:list[int]):
+    """Restore a recent match from its Discord match card after a storage migration."""
+    with connect() as con:
+        existing=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
+        if existing:
+            return dict(existing)
+        con.execute(
+            "INSERT INTO matches(id,guild_id,league,map,host_id,team_a,team_b,status) VALUES(?,?,?,?,?,?,?,'playing')",
+            (int(match_id),int(guild_id),str(league),str(map_name),int(host_id),','.join(map(str,team_a)),','.join(map(str,team_b))),
+        )
+        row=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
+        return dict(row) if row else None
+
+def create_unverified_match(match_id:int,guild_id:int,league:str,submitter_id:int):
+    """Create a temporary record so admins can review a result for an unknown match number."""
+    with connect() as con:
+        row=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
+        if row:
+            return dict(row)
+        con.execute(
+            "INSERT INTO matches(id,guild_id,league,map,host_id,team_a,team_b,status) VALUES(?,?,?,?,?,?,?,'unverified')",
+            (int(match_id),int(guild_id),str(league),"Неизвестно",int(submitter_id),str(int(submitter_id)),""),
+        )
+        row=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
+        return dict(row) if row else None
+
 def match(match_id:int):
     with connect() as con:
         row=con.execute("SELECT * FROM matches WHERE id=?",(match_id,)).fetchone()

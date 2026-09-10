@@ -27,11 +27,14 @@ def result(m,uid):
  if m.get('score_a') is None or m.get('score_b') is None:return None
  ina=str(uid) in str(m.get('team_a','')).split(','); wa=int(m['score_a'])>int(m['score_b']); return 'W' if ina==wa else 'L'
 def map_rows(recent,uid):
- out={m:[0,0] for m in MAPS}
+ out={m:[0,0,0,0] for m in MAPS}
  for row in recent:
   name=str(row.get('map') or ''); r=result(row,uid)
-  if name in out and r: out[name][0 if r=='W' else 1]+=1
- used=[(m,*v) for m,v in out.items() if sum(v)]; empty=[(m,0,0) for m,v in out.items() if not sum(v)]; return (used+empty)[:6]
+  if name in out and r:
+   out[name][0 if r=='W' else 1]+=1
+   out[name][2]+=max(0,int(row.get('player_kills',0)))
+   out[name][3]+=max(0,int(row.get('player_deaths',0)))
+ used=[(m,*v) for m,v in out.items() if v[0]+v[1]]; empty=[(m,0,0,0,0) for m,v in out.items() if not (v[0]+v[1])]; return (used+empty)[:6]
 def donut(d,c,r,ratio,value,label):
  x,y=c; d.arc((x-r,y-r,x+r,y+r),-90,270,fill=(59,35,82),width=17); d.arc((x-r,y-r,x+r,y+r),-90,-90+360*max(0,min(1,ratio)),fill=PURPLE,width=17); txt(d,(x,y-5),value,36,WHITE,True,'mm'); txt(d,(x,y+34),label,13,MUTED,True,'mm')
 def hexagon(d,c,r,value):
@@ -39,7 +42,7 @@ def hexagon(d,c,r,value):
 
 def build_profile_card_sync(player,name,avatar_url,recent,meta=None):
  meta=meta or {}; points=max(0,int(player.get('points',0))); lvl=elo_level(points); lg=meta.get('league') or league(points)
- games=int(player.get('games',0)); wins=int(player.get('wins',0)); losses=int(player.get('losses',max(0,games-wins))); kills=int(player.get('kills',0)); deaths=int(player.get('deaths',0)); assists=int(player.get('assists',0)); mvp=int(player.get('mvp',0))
+ games=max(0,int(player.get('games',0))); wins=max(0,min(games,int(player.get('wins',0)))); losses=max(0,min(games-wins,int(player.get('losses',max(0,games-wins))))); kills=max(0,int(player.get('kills',0))); deaths=max(0,int(player.get('deaths',0))); assists=max(0,int(player.get('assists',0))); mvp=max(0,int(player.get('mvp',0)))
  kd=kills/max(1,deaths); wr=wins/max(1,games)*100; avg=kills/max(1,games); rounds=max(1,games*20); kpr=kills/rounds; apr=assists/rounds; rating=kd*.55+wr/100*.45; impact=max(0,2.13*kpr+.42*apr-.41); svr=max(0,min(100,(1-deaths/rounds)*100))
  im=Image.new('RGBA',(W,H),(*BG,255)); d=ImageDraw.Draw(im,'RGBA')
  glow=Image.new('RGBA',(W,H)); g=ImageDraw.Draw(glow); g.ellipse((-380,-250,920,760),fill=(*PURPLE,72)); g.ellipse((900,650,1900,1700),fill=(*PINK,35)); im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(160))); d=ImageDraw.Draw(im,'RGBA')
@@ -69,8 +72,9 @@ def build_profile_card_sync(player,name,avatar_url,recent,meta=None):
  # Map section.
  box(d,(25,925,985,1570),28); txt(d,(62,960),'MAP STATISTIC',24,WHITE,True); rows=map_rows(recent,player['user_id']); best=max(rows,key=lambda z:(z[1]/max(1,z[1]+z[2]),z[1]))
  donut(d,(175,1115),92,best[1]/max(1,best[1]+best[2]),f'{best[1]/max(1,best[1]+best[2])*100:.0f}%','WIN RATE'); txt(d,(305,1062),best[0],25,WHITE,True); txt(d,(305,1110),f'W = {best[1]}   L = {best[2]}',19,MUTED,True)
- for i,(mn,mw,ml) in enumerate(rows):
-  col=i%3; row=i//3; x=55+col*300; y=1240+row*137; d.rounded_rectangle((x,y,x+275,y+115),19,fill=(*CARD,255),outline=(91,34,130,180),width=1); d.rounded_rectangle((x+15,y+15,x+82,y+82),14,outline=(*PURPLE,240),width=3); txt(d,(x+48,y+49),mn[:2].upper(),17,PURPLE,True,'mm'); txt(d,(x+98,y+20),mn,17,WHITE,True); txt(d,(x+98,y+49),f'W {mw}   L {ml}',14,MUTED,True); txt(d,(x+18,y+94),f'K/D {kd:.2f}',13,WHITE,True); txt(d,(x+250,y+94),f'W/R {mw/max(1,mw+ml)*100:.0f}%',13,CYAN,True,'ra')
+ for i,(mn,mw,ml,mk,md) in enumerate(rows):
+  map_kd=mk/max(1,md) if mw+ml else 0
+  col=i%3; row=i//3; x=55+col*300; y=1240+row*137; d.rounded_rectangle((x,y,x+275,y+115),19,fill=(*CARD,255),outline=(91,34,130,180),width=1); d.rounded_rectangle((x+15,y+15,x+82,y+82),14,outline=(*PURPLE,240),width=3); txt(d,(x+48,y+49),mn[:2].upper(),17,PURPLE,True,'mm'); txt(d,(x+98,y+20),mn,17,WHITE,True); txt(d,(x+98,y+49),f'W {mw}   L {ml}',14,MUTED,True); txt(d,(x+18,y+94),f'K/D {map_kd:.2f}',13,WHITE,True); txt(d,(x+250,y+94),f'W/R {mw/max(1,mw+ml)*100:.0f}%',13,CYAN,True,'ra')
  # Recent match grid.
  box(d,(1015,1115,1575,1570),25); txt(d,(1055,1150),'RECENT MATCHES',23,WHITE,True); rr=[result(x,player['user_id']) for x in recent[:28]]; rr=[x for x in rr if x]
  for i in range(28):

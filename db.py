@@ -342,7 +342,26 @@ def cleanup_old_matches(retention_days:int=3):
 def league_player(guild_id:int,user_id:int,league:str):
     with connect() as con:
         con.execute("INSERT OR IGNORE INTO player_league_stats(guild_id,user_id,league) VALUES(?,?,?)",(guild_id,user_id,league))
+        row=con.execute("SELECT * FROM player_league_stats WHERE guild_id=? AND user_id=? AND league=?",(guild_id,user_id,league)).fetchone()
+        player_row=con.execute("SELECT * FROM players WHERE guild_id=? AND user_id=?",(guild_id,user_id)).fetchone()
+        league_games=con.execute("SELECT COALESCE(SUM(games),0) FROM player_league_stats WHERE guild_id=? AND user_id=?",(guild_id,user_id)).fetchone()[0]
+        # Legacy profiles originally stored totals only in players. Seed one empty
+        # league once instead of displaying a reset profile after re-registration.
+        if row and player_row and int(row["games"] or 0)==0 and int(player_row["games"] or 0)>0 and int(league_games or 0)==0:
+            columns=("games","wins","losses","kills","deaths","assists","mvp","points")
+            con.execute(
+                "UPDATE player_league_stats SET "+",".join(f"{column}=?" for column in columns)+" WHERE guild_id=? AND user_id=? AND league=?",
+                tuple(player_row[column] for column in columns)+(guild_id,user_id,league),
+            )
         return dict(con.execute("SELECT * FROM player_league_stats WHERE guild_id=? AND user_id=? AND league=?",(guild_id,user_id,league)).fetchone())
+
+def best_league_player(guild_id:int,user_id:int):
+    with connect() as con:
+        row=con.execute(
+            "SELECT * FROM player_league_stats WHERE guild_id=? AND user_id=? ORDER BY games DESC,points DESC LIMIT 1",
+            (guild_id,user_id),
+        ).fetchone()
+        return dict(row) if row else None
 
 def apply_player_stats(guild_id:int,stats:list[dict],league:str|None=None):
     with connect() as con:

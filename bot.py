@@ -474,7 +474,7 @@ def registration_embed(member=None):
     first_step="Открой канал **📋・регистрация** и выбери нужную кнопку." if member else "Выбери **Регистрация** для нового профиля или **Войти по данным** для восстановления старого."
     e.add_field(name="01  НАЖМИ КНОПКУ",value=first_step,inline=False)
     e.add_field(name="02  УКАЖИ ДАННЫЕ",value="В одной форме укажи игровой ник и числовой Standoff 2 ID.",inline=False)
-    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Бот выдаст роли **зарегистрирован** и **Default League**, установит **{STARTING_ELO} ELO** и откроет сервер.",inline=False)
+    e.add_field(name="03  ПОЛУЧИ ДОСТУП",value=f"Новый профиль получит **{STARTING_ELO} ELO**. При повторной регистрации прежние ELO и статистика сохраняются.",inline=False)
     e.set_footer(text="DOMINION CYBER • competitive platform")
     return e
 
@@ -2806,6 +2806,11 @@ def member_current_league(member):
 def league_profile_data(guild_id,player_data,member):
     league_name=member_current_league(member)
     league_stats=db.league_player(guild_id,int(player_data["user_id"]),league_name)
+    if int(league_stats.get("games",0) or 0)==0 and int(player_data.get("games",0) or 0)>0:
+        previous=db.best_league_player(guild_id,int(player_data["user_id"]))
+        if previous and int(previous.get("games",0) or 0)>0:
+            league_stats=previous
+            league_name=str(previous["league"])
     merged=dict(player_data)
     for key in ("games","wins","losses","kills","deaths","assists","mvp","points"):
         merged[key]=league_stats[key]
@@ -3053,6 +3058,24 @@ def split_match_teams(guild,members):
 async def start_match(lobby,text):
     members=live_members(lobby)[:LOBBY_SIZE]
     if not members: return
+    missing_game_id=[]
+    for member in members:
+        profile=db.player(lobby.guild.id,member.id)
+        if not str(profile.get("game_id") or "").strip():
+            missing_game_id.append(member)
+    if missing_game_id:
+        registered_role=find_role(lobby.guild,REGISTERED_ROLE_NAME)
+        for member in missing_game_id:
+            if registered_role and registered_role in member.roles:
+                try: await member.remove_roles(registered_role,reason="DOMINION: отсутствует Standoff 2 ID")
+                except discord.HTTPException: pass
+            try: await member.send(embed=registration_embed(member),view=RegistrationView())
+            except discord.HTTPException: pass
+            try: await member.move_to(None,reason="DOMINION: для ranked нужен Standoff 2 ID")
+            except discord.HTTPException: pass
+        mentions=" ".join(member.mention for member in missing_game_id)
+        await text.send(f"⚠️ Матч не создан: у {mentions} не указан Standoff 2 ID. Игрокам повторно отправлена регистрация; остальные роли и данные сохранены.")
+        return
     a,b=split_match_teams(lobby.guild,members)
     league=league_of(lobby) or "Default"
     host=random.choice(members)
@@ -3412,7 +3435,23 @@ async def apply_server_message_policy_to_channel(channel):
         for role in guild.roles:
             if role.is_default() or role!=guild.me.top_role:
                 changed+=await merge_channel_permissions(channel,role,**blocked)
-        changed+=await merge_channel_permissions(channel,guild.me,send_messages=True,embed_links=True,attach_files=True,add_reactions=True,send_messages_in_threads=True)
+        staff_names=(
+            STAFF_ROLES["owner"],STAFF_ROLES["admin"],EXTRA_ROLE_SPECS["developer"][0],
+            EXTRA_ROLE_SPECS["director"][0],EXTRA_ROLE_SPECS["head_admin"][0],
+            EXTRA_ROLE_SPECS["moderator"][0],EXTRA_ROLE_SPECS["games_admin"][0],
+            STAFF_ROLES.get("curator_qualifications"),STAFF_ROLES.get("curator_division"),STAFF_ROLES.get("curator_pro"),
+        )
+        allowed={"send_messages":True,"add_reactions":True,"create_public_threads":True,"send_messages_in_threads":True}
+        for role_name in staff_names:
+            role=find_role(guild,role_name) if role_name else None
+            if role:
+                changed+=await merge_channel_permissions(channel,role,**allowed)
+        changed+=await merge_channel_permissions(
+            channel,guild.me,
+            view_channel=True,read_message_history=True,send_messages=True,
+            embed_links=True,attach_files=True,add_reactions=True,
+            send_messages_in_threads=True,
+        )
         return changed
     scope,league_key=player_write_scope(channel)
     ordinary_can_write=scope in {"commands","general"}

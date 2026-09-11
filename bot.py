@@ -612,13 +612,30 @@ def match_ocr_players(guild,match,analysis):
             direct_matches+=1
         if (screenshot_team=="A" and user_id in team_b_ids) or (screenshot_team=="B" and user_id in team_a_ids):
             swapped_matches+=1
-    if swapped_matches>direct_matches:
+    # Для автоматического разворота нужны хотя бы два совпавших игрока и
+    # однозначный перевес. CT/T на финальном экране — текущие стороны, а не
+    # постоянные составы: после смены сторон они могут быть обратны team_a/b.
+    orientation_confident=max(direct_matches,swapped_matches)>=2 and direct_matches!=swapped_matches
+    analysis["orientation_direct_matches"]=direct_matches
+    analysis["orientation_swapped_matches"]=swapped_matches
+    analysis["orientation_uncertain"]=not orientation_confident
+    if swapped_matches>direct_matches and orientation_confident:
         analysis["score_a"],analysis["score_b"]=analysis.get("score_b"),analysis.get("score_a")
         for item in matched:
             screenshot_team=str(item.get("team") or "").upper()
             if screenshot_team=="A": item["team"]="B"
             elif screenshot_team=="B": item["team"]="A"
         orientation_note="Стороны скриншота автоматически сопоставлены с командами матча."
+        analysis["notes"]=(str(analysis.get("notes") or "")+" "+orientation_note).strip()
+        analysis["orientation"]="swapped"
+    elif orientation_confident:
+        analysis["orientation"]="direct"
+    else:
+        analysis["orientation"]="uncertain"
+        orientation_note=(
+            "Не удалось надёжно сопоставить стороны скриншота с постоянными составами. "
+            "Перед принятием модератор должен нажать «Изменить счёт» и указать счёт команд A и B."
+        )
         analysis["notes"]=(str(analysis.get("notes") or "")+" "+orientation_note).strip()
 
     absent=[]
@@ -704,8 +721,8 @@ def result_review_embed(submission_id,match,analysis,final_score,submitter,elo_a
     e.add_field(name="Начисление ELO",value=elo_summary,inline=True)
     e.add_field(name="Матч",value=f"Лига: **{league_display_name(match['league'])}**\nКарта: **{analysis.get('map') or match.get('map') or 'не определена'}**\nХост: <@{match['host_id']}>",inline=True)
     e.add_field(name="Распознавание",value=f"Точность: **{confidence:.0f}%**\nМодель: `{analysis.get('model') or 'ручной режим'}`\nРаспознано: **{analysis.get('recognized_players',len(analysis.get('matched_stats',[])))}/10**",inline=True)
-    e.add_field(name="CT · K / A / D",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
-    e.add_field(name="T · K / A / D",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
+    e.add_field(name="Команда A · K / A / D",value="\n".join(lines_a)[:1024] or "Нет распознанных данных",inline=True)
+    e.add_field(name="Команда B · K / A / D",value="\n".join(lines_b)[:1024] or "Нет распознанных данных",inline=True)
     notes=[]
     if analysis.get("notes"): notes.append(str(analysis["notes"]))
     if analysis.get("model")=="manual-entry":
@@ -775,8 +792,8 @@ async def refresh_pending_review_message(message,guild,submission_id):
 class PendingResultScoreModal(discord.ui.Modal,title="Изменить счёт матча"):
     def __init__(self,submission,source_message):
         super().__init__(); self.submission_id=submission["id"]; self.source_message=source_message
-        self.score_a=discord.ui.TextInput(label="Счёт команды CT",default=str(submission["score_a"]),max_length=2)
-        self.score_b=discord.ui.TextInput(label="Счёт команды T",default=str(submission["score_b"]),max_length=2)
+        self.score_a=discord.ui.TextInput(label="Счёт состава команды A",default=str(submission["score_a"]),max_length=2)
+        self.score_b=discord.ui.TextInput(label="Счёт состава команды B",default=str(submission["score_b"]),max_length=2)
         self.add_item(self.score_a); self.add_item(self.score_b)
 
     async def on_submit(self,interaction):
@@ -794,6 +811,12 @@ class PendingResultScoreModal(discord.ui.Modal,title="Изменить счёт 
         updated=db.submission(self.submission_id)
         try:
             analysis=json.loads(updated.get("analysis_json") or "{}")
+            # Ручной ввод относится к постоянным составам A/B, а не к CT/T на
+            # финальном скриншоте. После этого результат можно принять безопасно.
+            analysis["orientation_uncertain"]=False
+            analysis["orientation"]="moderator-confirmed"
+            analysis["orientation_confirmed_by_moderator"]=True
+            analysis["registered_score"]=[score_a,score_b]
             assign_personal_elo(match_data,score_a,score_b,analysis,preserve_manual=False)
             db.update_pending_submission_analysis(self.submission_id,interaction.guild_id,analysis)
         except Exception as exc: print(f"Recalculate pending ELO error: {exc}",flush=True)
@@ -862,31 +885,64 @@ class PendingPlayerStatsModal(discord.ui.Modal):
         await interaction.followup.send(f"✅ Статистика **{discord.utils.escape_markdown(self.nickname)}** изменена на **{values[0]}/{values[1]}/{values[2]}**, MVP **{values[3]}**.",ephemeral=True)
 
 
-class PendingPlayerStatsSelect(discord.ui.UserSelect):
-    def __init__(self,submission_id,source_message):
-        self.submission_id=submission_id; self.source_message=source_message
-        super().__init__(placeholder="Выбери игрока матча",min_values=1,max_values=1)
+class PendingPlayerStatsSelect(discord.ui.Select):
+    """Список только из участников матча, а не из всех пользователей сервера."""
+    def __init__(self,submission_id,source_message,guild,match_data):
+        self.submission_id=submission_id; self.source_message=source_message; self.guild=guild
+        team_a={int(value) for value in str(match_data.get("team_a") or "").split(",") if value}
+        player_ids=list(team_a)+[
+            int(value) for value in str(match_data.get("team_b") or "").split(",")
+            if value and int(value) not in team_a
+        ]
+        options=[]
+        for user_id in player_ids[:25]:
+            member=guild.get_member(user_id)
+            profile=db.player(guild.id,user_id)
+            nickname=str(profile.get("nickname") or (member.display_name if member else f"Игрок {user_id}"))
+            options.append(discord.SelectOption(
+                label=nickname[:100],
+                value=str(user_id),
+                description="Команда A" if user_id in team_a else "Команда B",
+            ))
+        # Матч всегда должен иметь участников, но оставляем безопасный вариант,
+        # чтобы Discord не отклонил компонент и не показал «не ответило вовремя».
+        if not options:
+            options=[discord.SelectOption(label="Участники не найдены",value="0")]
+        super().__init__(placeholder="Выбери игрока матча",options=options,min_values=1,max_values=1)
     async def callback(self,interaction):
         submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
-        member=self.values[0]
         if not submission or submission["status"]!="pending" or not match_data:
             return await interaction.response.send_message("Заявка уже обработана.",ephemeral=True)
+        try: user_id=int(self.values[0])
+        except (TypeError,ValueError):
+            return await interaction.response.send_message("Не удалось определить игрока.",ephemeral=True)
         ids={int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value}
-        if member.id not in ids: return await interaction.response.send_message("Этот игрок не участвовал в матче.",ephemeral=True)
+        if user_id not in ids: return await interaction.response.send_message("Этот игрок не участвовал в матче.",ephemeral=True)
         try: analysis=json.loads(submission.get("analysis_json") or "{}")
         except (TypeError,ValueError,json.JSONDecodeError): analysis={}
-        current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==member.id),{})
-        await interaction.response.send_modal(PendingPlayerStatsModal(self.submission_id,member.id,member.display_name,current,self.source_message))
+        current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==user_id),{})
+        member=self.guild.get_member(user_id)
+        profile=db.player(interaction.guild_id,user_id)
+        nickname=str(profile.get("nickname") or (member.display_name if member else f"Игрок {user_id}"))
+        await interaction.response.send_modal(PendingPlayerStatsModal(self.submission_id,user_id,nickname,current,self.source_message))
 
 
 class PendingPlayerStatsView(discord.ui.View):
-    def __init__(self,submission_id,manager_id,source_message):
+    def __init__(self,submission_id,manager_id,source_message,guild,match_data):
         super().__init__(timeout=300); self.manager_id=manager_id
-        self.add_item(PendingPlayerStatsSelect(submission_id,source_message))
+        self.add_item(PendingPlayerStatsSelect(submission_id,source_message,guild,match_data))
     async def interaction_check(self,interaction):
         if interaction.user.id!=self.manager_id:
             await interaction.response.send_message("Эта форма открыта другим администратором.",ephemeral=True); return False
         return True
+    async def on_error(self,interaction,error,item):
+        print(f"Pending player stats select error: {error!r}",flush=True)
+        message="Не удалось открыть статистику игрока. Ошибка записана в Railway Logs."
+        try:
+            if interaction.response.is_done(): await interaction.followup.send(message,ephemeral=True)
+            else: await interaction.response.send_message(message,ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 class PendingPlayerEloModal(discord.ui.Modal,title="Изменить ELO игрока"):
@@ -3811,7 +3867,7 @@ async def on_interaction(interaction):
         if action=="editscore":
             return await interaction.response.send_modal(PendingResultScoreModal(sub,interaction.message))
         if action=="editstats":
-            return await interaction.response.send_message(embed=pending_submission_stats_embed(interaction.guild,sub,match_data),view=PendingPlayerStatsView(submission_id,interaction.user.id,interaction.message),ephemeral=True)
+            return await interaction.response.send_message(embed=pending_submission_stats_embed(interaction.guild,sub,match_data),view=PendingPlayerStatsView(submission_id,interaction.user.id,interaction.message,interaction.guild,match_data),ephemeral=True)
         if action=="editelo":
             return await interaction.response.send_message(content="Выбери игрока, затем укажи его персональное изменение ELO.",view=PendingPlayerEloView(submission_id,interaction.user.id,interaction.message),ephemeral=True)
         await interaction.response.defer()
@@ -3821,6 +3877,12 @@ async def on_interaction(interaction):
             except (TypeError,ValueError,json.JSONDecodeError): analysis={}
             if analysis.get("match_missing"):
                 return await interaction.followup.send("Эту заявку нельзя принять: бот не нашёл такой матч ни в базе, ни в каналах ranked. Проверь скриншот и отклони заявку.",ephemeral=True)
+            if analysis.get("orientation_uncertain") and not analysis.get("orientation_confirmed_by_moderator"):
+                return await interaction.followup.send(
+                    "Бот не смог надёжно определить, какой постоянный состав победил после смены сторон. "
+                    "Нажми **«Изменить счёт»** и укажи результат для **команды A** и **команды B**, затем снова нажми **«Принять матч»**.",
+                    ephemeral=True,
+                )
             valid_score=((sub["score_a"]==13 or sub["score_b"]==13) and sub["score_a"]!=sub["score_b"] and min(sub["score_a"],sub["score_b"])>=0)
             if not valid_score:
                 return await interaction.followup.send("Сначала нажми **«Изменить счёт»** и вручную укажи правильный итоговый счёт.",ephemeral=True)

@@ -1302,7 +1302,9 @@ async def recover_match_from_ranked(guild,match_id):
         if not re.fullmatch(r"ranked(?:-\d+)?",normalized_channel_name(channel)):
             continue
         try:
-            async for message in channel.history(limit=1000):
+            # Не сканируем бесконечную историю: это резервное восстановление,
+            # основной источник матчей — постоянная SQLite-база на Volume.
+            async for message in channel.history(limit=250):
                 if cutoff and message.created_at<cutoff:
                     break
                 if not message.author.bot:
@@ -1335,7 +1337,13 @@ async def process_result_submission(interaction,match_id,attachment):
     # Временную unverified-запись тоже пытаемся заменить настоящей карточкой:
     # иначе в составе оставался только пользователь, отправивший результат.
     if not match or match.get("status")=="unverified":
-        recovered=await recover_match_from_ranked(interaction.guild,match_id)
+        try:
+            recovered=await asyncio.wait_for(
+                recover_match_from_ranked(interaction.guild,match_id),timeout=10,
+            )
+        except asyncio.TimeoutError:
+            print(f"Match #{match_id} recovery timed out after 10 seconds",flush=True)
+            recovered=None
         if recovered:
             match=recovered
     content_type=(attachment.content_type or "").lower()
@@ -1355,7 +1363,9 @@ async def process_result_submission(interaction,match_id,attachment):
             match=db.create_unverified_match(match_id,interaction.guild_id,league_name,interaction.user.id)
         try:
             image_bytes=await attachment.read()
-            analysis=await analyze_screenshot(image_bytes,content_type or "image/png")
+            analysis=await asyncio.wait_for(
+                analyze_screenshot(image_bytes,content_type or "image/png"),timeout=45,
+            )
         except Exception as exc:
             analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"players":[]}
 
@@ -1393,7 +1403,9 @@ async def process_result_submission(interaction,match_id,attachment):
         return await interaction.followup.send("Ты не являешься участником этого матча.",ephemeral=True)
     try:
         image_bytes=await attachment.read()
-        analysis=await analyze_screenshot(image_bytes,content_type or "image/png")
+        analysis=await asyncio.wait_for(
+            analyze_screenshot(image_bytes,content_type or "image/png"),timeout=45,
+        )
         analysis=match_ocr_players(interaction.guild,match,analysis)
     except Exception as exc:
         analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"matched_stats":[]}

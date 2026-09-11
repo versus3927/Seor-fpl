@@ -243,10 +243,46 @@ def create_unverified_match(match_id:int,guild_id:int,league:str,submitter_id:in
             return dict(row)
         con.execute(
             "INSERT INTO matches(id,guild_id,league,map,host_id,team_a,team_b,status) VALUES(?,?,?,?,?,?,?,'unverified')",
-            (int(match_id),int(guild_id),str(league),"Неизвестно",int(submitter_id),str(int(submitter_id)),""),
+            (int(match_id),int(guild_id),str(league),"Неизвестно",int(submitter_id),"",""),
         )
         row=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
         return dict(row) if row else None
+
+def reset_unverified_match_roster(match_id:int,guild_id:int):
+    """Remove the old submitter-only placeholder before automatic nickname linking."""
+    with connect() as con:
+        cur=con.execute(
+            "UPDATE matches SET team_a='',team_b='' WHERE id=? AND guild_id=? AND status='unverified'",
+            (int(match_id),int(guild_id)),
+        )
+        return cur.rowcount==1
+
+def guild_players(guild_id:int):
+    """Return registered profiles for automatic screenshot nickname linking."""
+    with connect() as con:
+        return [dict(row) for row in con.execute(
+            "SELECT * FROM players WHERE guild_id=? AND (nickname IS NOT NULL OR game_id IS NOT NULL)",
+            (int(guild_id),),
+        ).fetchall()]
+
+def upsert_match_participant(match_id:int,guild_id:int,user_id:int,team:str):
+    """Add or move a Discord user to team A/B for moderator-entered stats."""
+    side=str(team or "").strip().upper()
+    if side not in {"A","B"}:
+        return False
+    with connect() as con:
+        row=con.execute("SELECT team_a,team_b FROM matches WHERE id=? AND guild_id=?",(int(match_id),int(guild_id))).fetchone()
+        if not row:
+            return False
+        uid=int(user_id)
+        team_a=[int(x) for x in str(row['team_a'] or '').split(',') if x and int(x)!=uid]
+        team_b=[int(x) for x in str(row['team_b'] or '').split(',') if x and int(x)!=uid]
+        (team_a if side=='A' else team_b).append(uid)
+        con.execute(
+            "UPDATE matches SET team_a=?,team_b=? WHERE id=? AND guild_id=?",
+            (','.join(map(str,team_a)),','.join(map(str,team_b)),int(match_id),int(guild_id)),
+        )
+        return True
 
 def match(match_id:int):
     with connect() as con:
@@ -449,7 +485,7 @@ def finish_match(match_id:int,score_a:int,score_b:int,elo_a_delta:int|None=None,
     with connect() as con:
         m=con.execute("SELECT * FROM matches WHERE id=? AND status!='finished'",(match_id,)).fetchone()
         if not m: return False
-        a=[int(x) for x in m['team_a'].split(',')]; b=[int(x) for x in m['team_b'].split(',')]
+        a=[int(x) for x in m['team_a'].split(',') if x]; b=[int(x) for x in m['team_b'].split(',') if x]
         won_a=score_a>score_b
         for uid in a+b:
             con.execute("INSERT OR IGNORE INTO players(guild_id,user_id) VALUES(?,?)",(m['guild_id'],uid))

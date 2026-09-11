@@ -881,13 +881,14 @@ class PendingResultEloModal(discord.ui.Modal,title="Изменить ELO мат�
 
 
 class PendingPlayerStatsModal(discord.ui.Modal):
-    def __init__(self,submission_id,user_id,nickname,current,source_message):
+    def __init__(self,submission_id,user_id,nickname,current,source_message,default_team="A"):
         super().__init__(title=f"Стата: {nickname}"[:45]); self.submission_id=submission_id; self.user_id=user_id; self.nickname=nickname; self.source_message=source_message
         self.kills=discord.ui.TextInput(label="Убийства",default=str(int(current.get("kills",0))),max_length=3)
         self.assists=discord.ui.TextInput(label="Ассисты",default=str(int(current.get("assists",0))),max_length=3)
         self.deaths=discord.ui.TextInput(label="Смерти",default=str(int(current.get("deaths",0))),max_length=3)
         self.mvp=discord.ui.TextInput(label="MVP",default=str(int(current.get("mvp",0))),max_length=3)
-        for item in (self.kills,self.assists,self.deaths,self.mvp): self.add_item(item)
+        self.team=discord.ui.TextInput(label="Команда: A или B",default=default_team if default_team in {"A","B"} else "A",min_length=1,max_length=1)
+        for item in (self.kills,self.assists,self.deaths,self.mvp,self.team): self.add_item(item)
 
     async def on_submit(self,interaction):
         submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
@@ -895,64 +896,130 @@ class PendingPlayerStatsModal(discord.ui.Modal):
             return await interaction.response.send_message("Заявка уже обработана или не найдена.",ephemeral=True)
         if not can_review_result_submission(interaction.user,match_data):
             return await interaction.response.send_message("У тебя нет доступа к проверке этого матча.",ephemeral=True)
+        team=str(self.team.value).strip().upper()
+        if team not in {"A","B"}:
+            return await interaction.response.send_message("В поле команды укажи только `A` или `B`.",ephemeral=True)
         raw=[self.kills.value,self.assists.value,self.deaths.value,self.mvp.value]
         if any(not value.strip().isdigit() for value in raw):
             return await interaction.response.send_message("Введи целые числа от 0 до 999.",ephemeral=True)
         values=[int(value) for value in raw]
         if any(value>999 for value in values): return await interaction.response.send_message("Максимальное значение — 999.",ephemeral=True)
+        if not db.upsert_match_participant(submission["match_id"],interaction.guild_id,self.user_id,team):
+            return await interaction.response.send_message("Не удалось добавить игрока в состав матча.",ephemeral=True)
         if not db.update_pending_submission_player_stats(self.submission_id,interaction.guild_id,self.user_id,*values):
             return await interaction.response.send_message("Не удалось изменить статистику.",ephemeral=True)
         updated=db.submission(self.submission_id)
         try:
             analysis=json.loads(updated.get("analysis_json") or "{}")
+            match_data=guild_match(interaction.guild_id,submission["match_id"])
             assign_personal_elo(match_data,updated["score_a"],updated["score_b"],analysis,preserve_manual=True)
             db.update_pending_submission_analysis(self.submission_id,interaction.guild_id,analysis)
         except Exception as exc: print(f"Recalculate player ELO error: {exc}",flush=True)
         await interaction.response.defer(ephemeral=True)
         await refresh_pending_review_message(self.source_message,interaction.guild,self.submission_id)
-        await interaction.followup.send(f"✅ Статистика **{discord.utils.escape_markdown(self.nickname)}** изменена на **{values[0]}/{values[1]}/{values[2]}**, MVP **{values[3]}**.",ephemeral=True)
+        await interaction.followup.send(f"✅ Игрок **{discord.utils.escape_markdown(self.nickname)}** добавлен в команду **{team}**. Статистика: **{values[0]}/{values[1]}/{values[2]}**, MVP **{values[3]}**.",ephemeral=True)
 
 
-class PendingPlayerStatsSelect(discord.ui.Select):
-    """Список только из участников матча, а не из всех пользователей сервера."""
+def moderator_nickname_score(source_value,target_value):
+    def variants(value):
+        raw=str(value or "").lower().strip().replace("`","").replace("*","").replace("_","")
+        result={re.sub(r"[^a-zа-яё0-9]","",raw)}
+        no_tags=re.sub(r"\[[^\]]{1,20}\]|\([^)]{1,20}\)|\{[^}]{1,20}\}"," ",raw)
+        result.add(re.sub(r"[^a-zа-яё0-9]","",no_tags))
+        for part in re.split(r"[|/\\]",no_tags): result.add(re.sub(r"[^a-zа-яё0-9]","",part))
+        return {item for item in result if item}
+    best=0.0
+    for source in variants(source_value):
+        for target in variants(target_value):
+            score=SequenceMatcher(None,source,target).ratio()
+            shorter,longer=sorted((source,target),key=len)
+            if len(shorter)>=4 and shorter in longer: score=max(score,0.92)
+            best=max(best,score)
+    return best
+
+
+def auto_link_unknown_match_players(guild,match,analysis):
+    """Link OCR nicknames to all registered profiles when no saved roster exists."""
+    profiles=db.guild_players(guild.id)
+    candidates=[]
+    for profile in profiles:
+        user_id=int(profile["user_id"])
+        member=guild.get_member(user_id)
+        names=[profile.get("nickname")]
+        if member:
+            names.extend((member.display_name,member.name))
+        candidates.append({"user_id":user_id,"names":[name for name in names if name]})
+
+    used=set(); linked=0; matched=[]
+    for raw_item in analysis.get("players",[]):
+        item=dict(raw_item)
+        ranked=[]
+        for candidate in candidates:
+            if candidate["user_id"] in used:
+                continue
+            score=max((moderator_nickname_score(item.get("name"),name) for name in candidate["names"]),default=0.0)
+            ranked.append((score,candidate))
+        ranked.sort(key=lambda pair:pair[0],reverse=True)
+        best_score,best=(ranked[0] if ranked else (0.0,None))
+        second_score=ranked[1][0] if len(ranked)>1 else 0.0
+        visible=re.sub(r"[^a-zа-яё0-9]","",str(item.get("name") or "").lower())
+        threshold=0.62 if len(visible)>=5 else 0.74
+        # Высокое точное/вложенное совпадение принимаем сразу; для неточного
+        # требуем заметный отрыв от второго кандидата, чтобы не связать не того.
+        confident=best is not None and best_score>=threshold and (best_score>=0.90 or best_score-second_score>=0.08)
+        if confident:
+            user_id=best["user_id"]
+            item["user_id"]=user_id
+            item["nickname_match_score"]=round(best_score,3)
+            used.add(user_id); linked+=1
+            team=str(item.get("team") or "A").upper()
+            db.upsert_match_participant(match["id"],guild.id,user_id,team if team in {"A","B"} else "A")
+        matched.append(item)
+    analysis["matched_stats"]=matched
+    analysis["recognized_players"]=len(matched)
+    analysis["linked_players"]=linked
+    link_note=f"Автоматически привязано к Discord-профилям: {linked}/{len(matched)}."
+    analysis["notes"]=(str(analysis.get("notes") or "")+" "+link_note).strip()
+    return analysis
+
+
+class PendingPlayerStatsSelect(discord.ui.UserSelect):
+    """Администратор может выбрать любого Discord-игрока."""
     def __init__(self,submission_id,source_message,guild,match_data):
         self.submission_id=submission_id; self.source_message=source_message; self.guild=guild
-        team_a={int(value) for value in str(match_data.get("team_a") or "").split(",") if value}
-        player_ids=list(team_a)+[
-            int(value) for value in str(match_data.get("team_b") or "").split(",")
-            if value and int(value) not in team_a
-        ]
-        options=[]
-        for user_id in player_ids[:25]:
-            member=guild.get_member(user_id)
-            profile=db.player(guild.id,user_id)
-            nickname=str(profile.get("nickname") or (member.display_name if member else f"Игрок {user_id}"))
-            options.append(discord.SelectOption(
-                label=nickname[:100],
-                value=str(user_id),
-                description="Команда A" if user_id in team_a else "Команда B",
-            ))
-        # Матч всегда должен иметь участников, но оставляем безопасный вариант,
-        # чтобы Discord не отклонил компонент и не показал «не ответило вовремя».
-        if not options:
-            options=[discord.SelectOption(label="Участники не найдены",value="0")]
-        super().__init__(placeholder="Выбери игрока матча",options=options,min_values=1,max_values=1)
+        super().__init__(placeholder="Выбери любого игрока",min_values=1,max_values=1)
     async def callback(self,interaction):
         submission=db.submission(self.submission_id); match_data=guild_match(interaction.guild_id,submission["match_id"]) if submission else None
         if not submission or submission["status"]!="pending" or not match_data:
             return await interaction.response.send_message("Заявка уже обработана.",ephemeral=True)
-        try: user_id=int(self.values[0])
-        except (TypeError,ValueError):
-            return await interaction.response.send_message("Не удалось определить игрока.",ephemeral=True)
+        member=self.values[0]; user_id=member.id
         ids={int(value) for value in (match_data["team_a"]+","+match_data["team_b"]).split(",") if value}
-        if user_id not in ids: return await interaction.response.send_message("Этот игрок не участвовал в матче.",ephemeral=True)
         try: analysis=json.loads(submission.get("analysis_json") or "{}")
         except (TypeError,ValueError,json.JSONDecodeError): analysis={}
-        current=next((item for item in analysis.get("matched_stats",[]) if int(item.get("user_id") or 0)==user_id),{})
-        member=self.guild.get_member(user_id)
         profile=db.player(interaction.guild_id,user_id)
-        nickname=str(profile.get("nickname") or (member.display_name if member else f"Игрок {user_id}"))
-        await interaction.response.send_modal(PendingPlayerStatsModal(self.submission_id,user_id,nickname,current,self.source_message))
+        nickname=str(profile.get("nickname") or member.display_name or member.name)
+        names=[nickname,member.display_name,member.name]
+        items=list(analysis.get("matched_stats") or analysis.get("players") or [])
+        current=next((item for item in items if int(item.get("user_id") or 0)==user_id),None)
+        best_item=current; best_score=1.0 if current else 0.0
+        if not best_item:
+            for item in items:
+                score=max(moderator_nickname_score(item.get("name"),name) for name in names)
+                if score>best_score and not item.get("user_id"):
+                    best_score=score; best_item=item
+        unknown=bool(analysis.get("match_missing") or match_data.get("status")=="unverified")
+        if not unknown and user_id not in ids and (not best_item or best_score<0.62):
+            return await interaction.response.send_message("Этот игрок не найден в составе или на скриншоте матча.",ephemeral=True)
+        if best_item and not best_item.get("user_id"):
+            best_item["user_id"]=user_id
+            analysis["matched_stats"]=items
+            db.update_pending_submission_analysis(self.submission_id,interaction.guild_id,analysis)
+        team_a={int(value) for value in str(match_data.get("team_a") or "").split(",") if value}
+        team_b={int(value) for value in str(match_data.get("team_b") or "").split(",") if value}
+        if user_id in team_a: default_team="A"
+        elif user_id in team_b: default_team="B"
+        else: default_team=str((best_item or {}).get("team") or "A").upper()
+        await interaction.response.send_modal(PendingPlayerStatsModal(self.submission_id,user_id,nickname,best_item or {},self.source_message,default_team))
 
 
 class PendingPlayerStatsView(discord.ui.View):
@@ -1370,8 +1437,13 @@ async def process_result_submission(interaction,match_id,attachment):
             analysis={"error":str(exc)[:300],"score_a":None,"score_b":None,"map":None,"confidence":0,"players":[]}
 
         analysis["match_missing"]=True
-        analysis["matched_stats"]=[dict(item) for item in analysis.get("players",[]) if isinstance(item,dict)]
-        analysis["recognized_players"]=len(analysis["matched_stats"])
+        # Для неизвестного матча администратор сам подтверждает, какой счёт
+        # относится к назначенным составам A/B, прежде чем принять результат.
+        analysis["orientation_uncertain"]=True
+        analysis["orientation"]="moderator-required"
+        db.reset_unverified_match_roster(match_id,interaction.guild_id)
+        analysis=auto_link_unknown_match_players(interaction.guild,match,analysis)
+        match=guild_match(interaction.guild_id,match_id)
         missing_note="Номер матча отсутствует в базе и среди недавних сообщений ranked. Скриншот распознан без привязки игроков к Discord."
         analysis["notes"]=(str(analysis.get("notes") or "")+" "+missing_note).strip()
 
@@ -3922,8 +3994,6 @@ async def on_interaction(interaction):
         if approved:
             try: analysis=json.loads(sub.get("analysis_json") or "{}")
             except (TypeError,ValueError,json.JSONDecodeError): analysis={}
-            if analysis.get("match_missing"):
-                return await interaction.followup.send("Эту заявку нельзя принять: бот не нашёл такой матч ни в базе, ни в каналах ranked. Проверь скриншот и отклони заявку.",ephemeral=True)
             if analysis.get("orientation_uncertain") and not analysis.get("orientation_confirmed_by_moderator"):
                 return await interaction.followup.send(
                     "Бот не смог надёжно определить, какой постоянный состав победил после смены сторон. "

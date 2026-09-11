@@ -217,7 +217,17 @@ def restore_match(match_id:int,guild_id:int,league:str,map_name:str,host_id:int,
     with connect() as con:
         existing=con.execute("SELECT * FROM matches WHERE id=?",(int(match_id),)).fetchone()
         if existing:
-            return dict(existing)
+            # Неизвестная заявка могла раньше создать временную запись только с
+            # отправителем. Если настоящая карточка матча найдена в ranked,
+            # восстанавливаем исходные составы вместо возврата пустой заглушки.
+            if int(existing['guild_id'])==int(guild_id) and existing['status']=='unverified':
+                con.execute(
+                    "UPDATE matches SET league=?,map=?,host_id=?,team_a=?,team_b=?,status='playing' WHERE id=? AND guild_id=?",
+                    (str(league),str(map_name),int(host_id),','.join(map(str,team_a)),','.join(map(str,team_b)),int(match_id),int(guild_id)),
+                )
+                restored=con.execute("SELECT * FROM matches WHERE id=? AND guild_id=?",(int(match_id),int(guild_id))).fetchone()
+                return dict(restored) if restored else None
+            return dict(existing) if int(existing['guild_id'])==int(guild_id) else None
         con.execute(
             "INSERT INTO matches(id,guild_id,league,map,host_id,team_a,team_b,status) VALUES(?,?,?,?,?,?,?,'playing')",
             (int(match_id),int(guild_id),str(league),str(map_name),int(host_id),','.join(map(str,team_a)),','.join(map(str,team_b))),
@@ -324,7 +334,9 @@ def recent_matches(guild_id:int,limit:int=10):
         return [dict(x) for x in con.execute("SELECT * FROM matches WHERE guild_id=? ORDER BY id DESC LIMIT ?",(guild_id,limit))]
 
 def cleanup_old_matches(retention_days:int=3):
-    """Delete match records older than the retention window without changing player totals."""
+    """Delete old matches only when retention is explicitly enabled (> 0)."""
+    if int(retention_days)<=0:
+        return 0
     days=max(1,int(retention_days))
     modifier=f"-{days} days"
     with connect() as con:

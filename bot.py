@@ -32,7 +32,9 @@ BOT_NAME = os.getenv("BOT_NAME", "Dominion FACEIT")
 ACCENT = int(os.getenv("ACCENT_COLOR", "7C3AED"), 16)
 LOBBY_SIZE = max(1, min(10, int(os.getenv("LOBBY_SIZE", "10"))))
 QUALIFICATION_KD = max(0.0, float(os.getenv("QUALIFICATION_KD", "1.00")))
-MATCH_RETENTION_DAYS = max(1, int(os.getenv("MATCH_RETENTION_DAYS", "3")))
+# 0 = хранить матчи бессрочно. Составы нужны для последующей проверки
+# результатов, поэтому автоматическое удаление по умолчанию отключено.
+MATCH_RETENTION_DAYS = max(0, int(os.getenv("MATCH_RETENTION_DAYS", "0")))
 LEAGUES = {
     "Default": ("⚪", 1000),
     "Qualifications": ("🟢", 1150),
@@ -568,28 +570,54 @@ def match_ocr_players(guild,match,analysis):
     for user_id in player_ids:
         member=guild.get_member(user_id)
         player=db.player(guild.id,user_id)
-        names=[]
+        # Сохранённый игровой ник используем даже если Member не попал в кеш.
+        # Discord-имя добавляем как дополнительные варианты для сопоставления.
+        names=[player.get("nickname")] if player.get("nickname") else []
         if member:
-            names=[player.get("nickname") or member.display_name,member.display_name,member.name]
+            names.extend((member.display_name,member.name))
         candidates.append({"user_id":user_id,"member":member,"game_id":str(player.get("game_id") or ""),"names":names})
     used=set(); matched=[]
-    def clean(value): return re.sub(r"[^a-zа-яё0-9]","",str(value).lower())
+    def nickname_variants(value):
+        """Нормализованные варианты ника без игровых/клановых тегов."""
+        raw=str(value or "").lower().strip()
+        raw=raw.replace("`","").replace("*","").replace("_","")
+        variants={re.sub(r"[^a-zа-яё0-9]","",raw)}
+        # [RCB], [hhe], (team), {clan} — это тег, а не часть ника.
+        without_tags=re.sub(r"\[[^\]]{1,20}\]|\([^)]{1,20}\)|\{[^}]{1,20}\}"," ",raw)
+        variants.add(re.sub(r"[^a-zа-яё0-9]","",without_tags))
+        # Варианты вида TAG | nickname или TAG / nickname.
+        for part in re.split(r"[|/\\]",without_tags):
+            variants.add(re.sub(r"[^a-zа-яё0-9]","",part))
+        return {item for item in variants if item}
+
+    def nickname_score(source_value,target_value):
+        best=0.0
+        for source in nickname_variants(source_value):
+            for target in nickname_variants(target_value):
+                score=SequenceMatcher(None,source,target).ratio()
+                shorter,longer=sorted((source,target),key=len)
+                # Допускаем добавленный тег/приставку и небольшое изменение ника.
+                if len(shorter)>=4 and shorter in longer:
+                    score=max(score,0.92 if len(longer)-len(shorter)<=8 else 0.84)
+                best=max(best,score)
+        return best
     for stat in analysis.get("players",[]):
         selected=None
         game_id=str(stat.get("game_id") or "")
         if game_id:
             selected=next((c for c in candidates if c["game_id"]==game_id and c["user_id"] not in used),None)
         if not selected:
-            source=clean(stat.get("name"))
             best_score=0
             for candidate in candidates:
                 if candidate["user_id"] in used: continue
                 for name in candidate["names"]:
-                    target=clean(name)
-                    score=SequenceMatcher(None,source,target).ratio() if source and target else 0
-                    if source in target or target in source: score=max(score,0.86)
+                    score=nickname_score(stat.get("name"),name)
                     if score>best_score: best_score=score; selected=candidate
-            if best_score<0.68: selected=None
+            # Для длинных ников допустима небольшая опечатка/изменение. Для
+            # коротких оставляем более строгий порог, чтобы не связать не того.
+            visible=max(nickname_variants(stat.get("name")) or {""},key=len)
+            threshold=0.62 if len(visible)>=5 else 0.74
+            if best_score<threshold: selected=None
         item=dict(stat)
         if selected:
             item["user_id"]=selected["user_id"]
@@ -1267,15 +1295,15 @@ class ResultSubmitModal(discord.ui.Modal, title="Отправка результ
 
 
 async def recover_match_from_ranked(guild,match_id):
-    """Recover a recent match from the bot's ranked card if the DB was moved or reset."""
-    cutoff=datetime.now(timezone.utc)-timedelta(days=MATCH_RETENTION_DAYS)
+    """Recover a match and its full roster from a ranked channel card."""
+    cutoff=(datetime.now(timezone.utc)-timedelta(days=MATCH_RETENTION_DAYS)) if MATCH_RETENTION_DAYS>0 else None
     title_pattern=re.compile(rf"Матч\s*#\s*{int(match_id)}\b",re.IGNORECASE)
     for channel in guild.text_channels:
         if not re.fullmatch(r"ranked(?:-\d+)?",normalized_channel_name(channel)):
             continue
         try:
-            async for message in channel.history(limit=100):
-                if message.created_at<cutoff:
+            async for message in channel.history(limit=1000):
+                if cutoff and message.created_at<cutoff:
                     break
                 if not message.author.bot:
                     continue
@@ -1304,8 +1332,12 @@ async def recover_match_from_ranked(guild,match_id):
 
 async def process_result_submission(interaction,match_id,attachment):
     match=guild_match(interaction.guild_id,match_id)
-    if not match:
-        match=await recover_match_from_ranked(interaction.guild,match_id)
+    # Временную unverified-запись тоже пытаемся заменить настоящей карточкой:
+    # иначе в составе оставался только пользователь, отправивший результат.
+    if not match or match.get("status")=="unverified":
+        recovered=await recover_match_from_ranked(interaction.guild,match_id)
+        if recovered:
+            match=recovered
     content_type=(attachment.content_type or "").lower()
     if not content_type.startswith("image/") and not attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp")):
         return await interaction.followup.send("Прикрепи скриншот в формате PNG, JPG или WEBP.",ephemeral=True)
@@ -3678,9 +3710,12 @@ async def on_ready():
         if registration_fix["fixed"]:
             print(f"Registration cleanup in {guild.name}: {registration_fix}",flush=True)
         await apply_server_message_policy(guild)
-    cleanup_task=getattr(bot,"_match_cleanup_task",None)
-    if cleanup_task is None or cleanup_task.done():
-        bot._match_cleanup_task=asyncio.create_task(match_database_cleanup_loop())
+    # Матчи и их составы должны сохраняться. Автоочистка включается только если
+    # администратор явно задал MATCH_RETENTION_DAYS больше нуля.
+    if MATCH_RETENTION_DAYS>0:
+        cleanup_task=getattr(bot,"_match_cleanup_task",None)
+        if cleanup_task is None or cleanup_task.done():
+            bot._match_cleanup_task=asyncio.create_task(match_database_cleanup_loop())
 
 
 @bot.event
